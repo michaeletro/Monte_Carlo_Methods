@@ -4,13 +4,15 @@ Monte Carlo experimentation in C++, now with a Python Interactive Brokers gatewa
 
 ## What is in the repo
 
-- `rng_test`: the existing random-number generator demo.
 - `ib_gateway`: the primary Interactive Brokers CLI entrypoint. It connects to TWS or IB Gateway and emits JSONL events to stdout and an optional log file.
 - `ib_event_processor`: the supported native C++ processing stage. It consumes the gateway JSONL stream and emits normalized quote and bar events for heavier downstream processing.
 - `ib_historical_store`: a native C++ persistence stage that calls `./ib_gateway`, fetches contract metadata and historical bars, and stores them in SQLite.
-- `header/InteractiveBrokers` and `src/InteractiveBrokers`: an experimental native C++ IBKR wrapper kept in the repo, but not the recommended path on modern Linux because of upstream protobuf compatibility issues in the deprecated C++ SDK.
+- `experimental/native_ib_cpp`: the deprecated native C++ IBKR wrapper kept for reference, but not the recommended path on modern Linux because of upstream protobuf compatibility issues in the deprecated C++ SDK.
+- `experimental/one_factor_sde`: scaffold-level SDE code kept out of the supported build path.
+- `experimental/random_num_generator`: older random-number generator code retained as reference material instead of a default build target.
+- `examples/ib_historical_runner.cpp`: a standalone example that shells out to `./ib_gateway` and parses historical-bar JSONL.
 
-The `OneFactorSDE` code is still scaffold-level and is not part of the default build target yet.
+For a concrete keep-versus-clean inventory, see `docs/repo_layout.md`.
 
 ## Interactive Brokers setup
 
@@ -37,13 +39,13 @@ Typical API ports:
 
 ## Build
 
-Build the RNG demo:
+Build the supported C++ processing stage:
 
 ```bash
 make
 ```
 
-This now builds both `rng_test` and the supported C++ event processor `ib_event_processor`.
+This now builds the supported C++ event processor `ib_event_processor`.
 
 Prepare the Interactive Brokers gateway:
 
@@ -67,7 +69,7 @@ make ib_historical_store
 
 ## Experimental native C++ target
 
-The deprecated IBKR C++ SDK is still available as an experimental target if you need it, but on modern Linux distributions it can fail because the SDK ships protobuf-generated code tied to older protobuf versions.
+The deprecated IBKR C++ SDK is still available as an experimental target if you need it, but on modern Linux distributions it can fail because the SDK ships protobuf-generated code tied to older protobuf versions. The source for that target now lives under `experimental/native_ib_cpp`.
 
 ```bash
 make ib_gateway_cpp IB_API_ROOT=/path/to/IBJts
@@ -88,8 +90,20 @@ The recommended path in this repo is:
 
 1. Python `ib_gateway` handles TWS or IB Gateway connectivity and emits flat JSONL events.
 2. C++ `ib_event_processor` consumes that JSONL stream and performs the heavier normalization and processing work.
+3. Optional C++ `ib_historical_store` persists contract metadata and historical bars into SQLite when you need a storage runner.
 
 This avoids the deprecated IBKR C++ SDK while keeping the performance-sensitive stage in C++.
+
+## Repo Layout
+
+- `ib_gateway.py`, `ib_gateway`, and `ib_gateway_app/`: supported Python gateway and WebSocket bridge.
+- `src/InteractiveBrokers/IBEventProcessor.cpp` and `src/InteractiveBrokers/ib_event_processor_main.cpp`: supported C++ JSONL processor.
+- `src/InteractiveBrokers/IBHistoricalStore.cpp` and `src/InteractiveBrokers/ib_historical_store_main.cpp`: supported C++ SQLite historical-store runner.
+- `experimental/native_ib_cpp/`: deprecated C++ SDK path retained for reference.
+- `experimental/one_factor_sde/` and `experimental/random_num_generator/`: non-default Monte Carlo scaffolding and older demos.
+- `examples/`: standalone examples that are not part of the default build.
+
+Generated artifacts such as `.pyc`, SQLite databases, JSONL logs, and compiled binaries are intentionally ignored and should stay untracked.
 
 ## Gateway usage
 
