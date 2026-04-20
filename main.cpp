@@ -1,4 +1,4 @@
-#include "RandomGenerators.hpp"
+#include "RandomNumGenerator/RandomGenerators.hpp"
 #include <iostream>
 
 int main() {
