@@ -48,6 +48,7 @@ def build_contract(args: argparse.Namespace) -> Contract:
         trading_class=getattr(args, "trading_class", ""),
         con_id=getattr(args, "con_id", None),
     )
+    
     return contract
 
 
