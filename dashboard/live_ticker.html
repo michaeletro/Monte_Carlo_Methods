@@ -1,0 +1,1951 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IBKR Live Ticker</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    :root {
+      --bg: #f4f8f3;
+      --surface: rgba(255, 255, 255, 0.92);
+      --surface-strong: #ffffff;
+      --surface-muted: rgba(248, 250, 247, 0.94);
+      --border: rgba(15, 23, 42, 0.08);
+      --border-strong: rgba(15, 23, 42, 0.14);
+      --text: #0f172a;
+      --muted: #667085;
+      --muted-strong: #344054;
+      --accent: #00c805;
+      --accent-soft: rgba(0, 200, 5, 0.12);
+      --accent-strong: #067647;
+      --negative: #ff5b35;
+      --negative-soft: rgba(255, 91, 53, 0.12);
+      --warning: #b54708;
+      --warning-soft: rgba(247, 144, 9, 0.14);
+      --shadow: 0 22px 50px rgba(15, 23, 42, 0.08);
+      --radius-xl: 26px;
+      --radius-lg: 20px;
+      --radius-md: 16px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      height: 100%;
+    }
+
+    body {
+      margin: 0;
+      overflow: auto;
+      min-height: 100svh;
+      font-family: 'Manrope', 'IBM Plex Sans', 'Segoe UI', sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 10% 12%, rgba(0, 200, 5, 0.1), transparent 23%),
+        radial-gradient(circle at 92% 8%, rgba(15, 23, 42, 0.08), transparent 24%),
+        linear-gradient(180deg, #fbfcfa 0%, var(--bg) 100%);
+    }
+
+    .shell {
+      width: 100%;
+      min-height: 100svh;
+      padding: clamp(12px, 1.5vw, 22px);
+      display: grid;
+      grid-template-rows: auto auto auto;
+      gap: 16px;
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+    }
+
+    .eyebrow {
+      margin: 0 0 6px;
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .brand-bar {
+      padding: 18px 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    .brand-cluster {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      min-width: 0;
+    }
+
+    .brand-mark {
+      width: 46px;
+      height: 46px;
+      border-radius: 15px;
+      display: grid;
+      place-items: center;
+      color: white;
+      font-size: 1rem;
+      font-weight: 900;
+      letter-spacing: -0.08em;
+      background: linear-gradient(140deg, #0f172a 0%, #0b1f14 35%, #00c805 100%);
+      box-shadow: 0 16px 32px rgba(0, 200, 5, 0.2);
+      flex: 0 0 auto;
+    }
+
+    .brand-copy {
+      min-width: 0;
+    }
+
+    .brand-copy h1 {
+      margin: 0;
+      font-size: clamp(1.3rem, 2vw, 1.8rem);
+      line-height: 1;
+      letter-spacing: -0.05em;
+    }
+
+    .brand-copy p:last-child {
+      margin: 6px 0 0;
+      max-width: 52rem;
+      color: var(--muted);
+      line-height: 1.5;
+      font-size: 0.94rem;
+    }
+
+    .status-cluster {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 12px;
+      min-width: min(44vw, 430px);
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent-strong);
+      font-weight: 800;
+      font-size: 0.82rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      flex: 0 0 auto;
+    }
+
+    .status-pill::before {
+      content: '';
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 0 6px rgba(0, 200, 5, 0.14);
+    }
+
+    .status-pill.live {
+      background: var(--accent-soft);
+      color: var(--accent-strong);
+    }
+
+    .status-pill.warn {
+      background: var(--warning-soft);
+      color: var(--warning);
+    }
+
+    .status-pill.error {
+      background: rgba(255, 59, 48, 0.12);
+      color: #b42318;
+    }
+
+    .status-note {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.45;
+      font-size: 0.93rem;
+      text-align: right;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.72fr);
+      gap: 16px;
+    }
+
+    .quote-card,
+    .insight-card {
+      padding: 24px 26px;
+    }
+
+    .quote-card {
+      display: grid;
+      gap: 22px;
+      background:
+        radial-gradient(circle at top right, rgba(0, 200, 5, 0.08), transparent 30%),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(247, 251, 247, 0.92) 100%);
+    }
+
+    .quote-card-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .symbol-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .symbol-row h2 {
+      margin: 0;
+      font-size: clamp(2.8rem, 5vw, 4.8rem);
+      line-height: 0.9;
+      letter-spacing: -0.08em;
+    }
+
+    .market-tag {
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-weight: 800;
+      font-size: 0.82rem;
+      letter-spacing: 0.03em;
+      border: 1px solid transparent;
+    }
+
+    .market-tag.live {
+      background: var(--accent-soft);
+      color: var(--accent-strong);
+      border-color: rgba(0, 200, 5, 0.16);
+    }
+
+    .market-tag.delayed {
+      background: var(--warning-soft);
+      color: var(--warning);
+      border-color: rgba(247, 144, 9, 0.18);
+    }
+
+    .market-tag.idle {
+      background: rgba(15, 23, 42, 0.06);
+      color: var(--muted-strong);
+      border-color: rgba(15, 23, 42, 0.08);
+    }
+
+    .window-badge {
+      min-width: 180px;
+      padding: 14px 16px;
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.04);
+    }
+
+    .window-badge span {
+      display: block;
+      color: var(--muted);
+      font-size: 0.74rem;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .window-badge strong {
+      display: block;
+      margin-top: 8px;
+      font-size: 1.05rem;
+      line-height: 1.2;
+      letter-spacing: -0.03em;
+    }
+
+    .price-line {
+      display: flex;
+      align-items: flex-end;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+
+    .headline-price {
+      font-size: clamp(3rem, 7vw, 6rem);
+      font-weight: 800;
+      line-height: 0.9;
+      letter-spacing: -0.08em;
+    }
+
+    .change-pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      padding: 10px 14px;
+      border-radius: 999px;
+      font-size: 0.98rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      border: 1px solid transparent;
+    }
+
+    .change-pill.positive {
+      background: var(--accent-soft);
+      border-color: rgba(0, 200, 5, 0.16);
+      color: var(--accent-strong);
+    }
+
+    .change-pill.negative {
+      background: var(--negative-soft);
+      border-color: rgba(255, 91, 53, 0.18);
+      color: #c4320a;
+    }
+
+    .change-pill.neutral {
+      background: rgba(15, 23, 42, 0.05);
+      border-color: rgba(15, 23, 42, 0.08);
+      color: var(--muted-strong);
+    }
+
+    .stat-row {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .stat-card,
+    .insight-item {
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--border);
+      background: var(--surface-muted);
+      padding: 14px 16px;
+    }
+
+    .stat-card span,
+    .insight-item span {
+      display: block;
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .stat-card strong,
+    .insight-item strong {
+      display: block;
+      margin-top: 10px;
+      font-size: 1.12rem;
+      line-height: 1.2;
+      letter-spacing: -0.03em;
+    }
+
+    .insight-card {
+      display: grid;
+      gap: 18px;
+      align-content: space-between;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(249, 252, 248, 0.94) 100%);
+    }
+
+    .insight-card h2 {
+      margin: 0;
+      font-size: 1.28rem;
+      letter-spacing: -0.04em;
+    }
+
+    .insight-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .insight-copy {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+      font-size: 0.95rem;
+    }
+
+    .workspace {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) clamp(320px, 25vw, 390px);
+      gap: 16px;
+      align-items: start;
+    }
+
+    .main-stage {
+      min-height: 0;
+      padding: 18px 20px 20px;
+      display: grid;
+      grid-template-rows: auto auto;
+      gap: 14px;
+      overflow: hidden;
+    }
+
+    .chart-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .chart-head h2,
+    .section-head h2,
+    .log-head h2 {
+      margin: 0;
+      font-size: 1.22rem;
+      letter-spacing: -0.04em;
+    }
+
+    .chart-head p,
+    .section-head p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      line-height: 1.5;
+      font-size: 0.92rem;
+      max-width: 40rem;
+    }
+
+    .stage-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      border: 0;
+      border-radius: 14px;
+      padding: 12px 15px;
+      font: inherit;
+      font-weight: 800;
+      cursor: pointer;
+      transition: transform 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+    }
+
+    button.primary {
+      background: linear-gradient(135deg, #0f172a 0%, #062312 40%, var(--accent) 100%);
+      color: white;
+      box-shadow: 0 14px 28px rgba(0, 200, 5, 0.2);
+    }
+
+    button.secondary {
+      background: white;
+      color: var(--text);
+      border: 1px solid var(--border-strong);
+      box-shadow: none;
+    }
+
+    #chart {
+      min-height: 360px;
+      width: 100%;
+      height: clamp(360px, calc(100svh - 290px), 760px);
+      border-radius: 20px;
+      overflow: hidden;
+      background: linear-gradient(180deg, rgba(249, 252, 248, 0.98) 0%, rgba(255, 255, 255, 0.96) 100%);
+    }
+
+    .sidebar {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 16px;
+    }
+
+    .controls,
+    .log-wrap {
+      padding: 20px;
+      min-height: 0;
+    }
+
+    .controls {
+      display: grid;
+      gap: 16px;
+      align-content: start;
+    }
+
+    .control-grid,
+    .advanced-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    label.span-2 {
+      grid-column: 1 / -1;
+    }
+
+    input,
+    select {
+      width: 100%;
+      padding: 11px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border-strong);
+      background: var(--surface-strong);
+      color: var(--text);
+      font: inherit;
+      font-size: 0.94rem;
+      font-weight: 600;
+    }
+
+    input:focus,
+    select:focus {
+      outline: 2px solid rgba(0, 200, 5, 0.18);
+      outline-offset: 1px;
+      border-color: rgba(0, 200, 5, 0.24);
+    }
+
+    .advanced-panel {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: rgba(15, 23, 42, 0.03);
+      padding: 0 14px;
+    }
+
+    .advanced-panel summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 14px 0;
+      font-size: 0.9rem;
+      font-weight: 800;
+      color: var(--muted-strong);
+    }
+
+    .advanced-panel summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .advanced-panel[open] summary {
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 12px;
+    }
+
+    .advanced-grid {
+      padding-bottom: 14px;
+    }
+
+    .hint {
+      border-radius: var(--radius-lg);
+      border: 1px solid rgba(0, 200, 5, 0.14);
+      background: rgba(0, 200, 5, 0.06);
+      padding: 14px 16px;
+      color: var(--muted-strong);
+      font-size: 0.9rem;
+      line-height: 1.55;
+    }
+
+    .hint strong {
+      display: block;
+      margin-top: 10px;
+      color: var(--text);
+      font-family: 'IBM Plex Mono', 'SFMono-Regular', monospace;
+      font-size: 0.79rem;
+      font-weight: 700;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .log-wrap {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 12px;
+    }
+
+    .log-head {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .log-chip {
+      padding: 7px 10px;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.05);
+      border: 1px solid var(--border);
+      color: var(--muted-strong);
+      font-size: 0.76rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .log-list {
+      min-height: 0;
+      overflow: auto;
+      display: grid;
+      gap: 8px;
+      padding-right: 4px;
+      align-content: start;
+    }
+
+    .log-list:empty::before {
+      content: 'Cache refreshes and stream status events will appear here.';
+      display: block;
+      padding: 14px 2px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .log-entry {
+      padding: 11px 12px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.86);
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      font-family: 'IBM Plex Mono', 'SFMono-Regular', monospace;
+      font-size: 0.8rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    @media (max-width: 1240px) {
+      .shell {
+        min-height: 100svh;
+        grid-template-rows: auto auto auto;
+      }
+
+      .hero-grid,
+      .workspace {
+        grid-template-columns: 1fr;
+      }
+
+      .workspace {
+        min-height: 760px;
+      }
+
+      .sidebar {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-rows: none;
+      }
+
+      .log-wrap {
+        min-height: 340px;
+      }
+    }
+
+    @media (max-width: 860px) {
+      .brand-bar,
+      .quote-card-header,
+      .chart-head,
+      .status-cluster,
+      .log-head {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .status-cluster {
+        min-width: 0;
+      }
+
+      .status-note {
+        text-align: left;
+      }
+
+      .stat-row,
+      .insight-grid,
+      .control-grid,
+      .advanced-grid,
+      .sidebar {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .sidebar {
+        grid-template-rows: none;
+      }
+
+      .main-stage {
+        min-height: 560px;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .shell {
+        padding: 10px;
+      }
+
+      .brand-bar,
+      .quote-card,
+      .insight-card,
+      .main-stage,
+      .controls,
+      .log-wrap {
+        padding: 16px;
+      }
+
+      .brand-mark {
+        width: 40px;
+        height: 40px;
+      }
+
+      .headline-price {
+        font-size: clamp(2.4rem, 15vw, 4.4rem);
+      }
+
+      .stat-row,
+      .insight-grid,
+      .control-grid,
+      .advanced-grid,
+      .sidebar {
+        grid-template-columns: 1fr;
+      }
+
+      .window-badge,
+      .stage-actions {
+        width: 100%;
+      }
+
+      .stage-actions button {
+        width: 100%;
+      }
+
+      .main-stage {
+        min-height: 460px;
+      }
+
+      #chart {
+        min-height: 320px;
+        height: clamp(320px, calc(100svh - 220px), 520px);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class='shell'>
+    <header class='panel brand-bar'>
+      <div class='brand-cluster'>
+        <div class='brand-mark'>MC</div>
+        <div class='brand-copy'>
+          <p class='eyebrow'>SQLite Market Dashboard</p>
+          <h1>Window-Sized Live Ticker</h1>
+          <p>
+            This interface stays chart-first like a modern trading app, but it only reads the local SQLite cache.
+            Resize the window and the dashboard reflows to use the available space without opening new IB sessions.
+          </p>
+        </div>
+      </div>
+      <div class='status-cluster'>
+        <div id='status-pill' class='status-pill warn'>Disconnected</div>
+        <p id='status-note' class='status-note'>Waiting to start local cache polling.</p>
+      </div>
+    </header>
+
+    <section class='hero-grid'>
+      <section class='panel quote-card'>
+        <div class='quote-card-header'>
+          <div>
+            <p class='eyebrow'>Tracked Symbol</p>
+            <div class='symbol-row'>
+              <h2 id='hero-symbol'>AAPL</h2>
+              <div id='market-tag' class='market-tag idle'>Waiting for bars</div>
+            </div>
+          </div>
+          <div class='window-badge'>
+            <span>Loaded Window</span>
+            <strong id='metric-window'>1800 S / 1 secs</strong>
+          </div>
+        </div>
+
+        <div class='price-line'>
+          <div class='headline-price' id='metric-last'>--</div>
+          <div class='change-pill neutral' id='metric-change'>No move yet</div>
+        </div>
+
+        <div class='stat-row'>
+          <div class='stat-card'>
+            <span>Window High</span>
+            <strong id='metric-bid'>--</strong>
+          </div>
+          <div class='stat-card'>
+            <span>Window Low</span>
+            <strong id='metric-ask'>--</strong>
+          </div>
+          <div class='stat-card'>
+            <span>Last Bar</span>
+            <strong id='metric-time'>--</strong>
+          </div>
+          <div class='stat-card'>
+            <span>Bars Loaded</span>
+            <strong id='metric-bars'>--</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class='panel insight-card'>
+        <div>
+          <p class='eyebrow'>Stream Health</p>
+          <h2>Readable at a glance</h2>
+        </div>
+
+        <div class='insight-grid'>
+          <div class='insight-item'>
+            <span>Cache Lag</span>
+            <strong id='metric-lag'>--</strong>
+          </div>
+          <div class='insight-item'>
+            <span>Browser Poll</span>
+            <strong id='metric-poll'>--</strong>
+          </div>
+          <div class='insight-item'>
+            <span>Status</span>
+            <strong id='metric-mode'>Idle</strong>
+          </div>
+          <div class='insight-item'>
+            <span>Chart Span</span>
+            <strong id='metric-span'>Waiting for bars</strong>
+          </div>
+        </div>
+
+        <p id='hero-summary' class='insight-copy'>
+          Start local polling and this page will surface cached bars in a full-window layout sized to the browser.
+        </p>
+      </section>
+    </section>
+
+    <main class='workspace' id='workspace'>
+      <section class='panel main-stage' id='main-stage'>
+        <div class='chart-head'>
+          <div>
+            <p class='eyebrow'>Price Action</p>
+            <h2>Viewport-responsive close chart</h2>
+            <p id='chart-caption'>
+              The chart fills the remaining window height and keeps reading only from the SQLite-backed dashboard API.
+            </p>
+          </div>
+          <div class='stage-actions'>
+            <button class='primary' id='connect-btn' type='button'>Refresh Now</button>
+            <button class='secondary' id='stop-btn' type='button'>Pause Polling</button>
+          </div>
+        </div>
+
+        <div id='chart'></div>
+      </section>
+
+      <aside class='sidebar'>
+        <section class='panel controls'>
+          <div class='section-head'>
+            <div>
+              <p class='eyebrow'>Watch Settings</p>
+              <h2>What this dashboard reads</h2>
+            </div>
+            <p>
+              These controls only change the local SQLite query and the browser polling loop. They do not fan out more
+              IB requests on their own.
+            </p>
+          </div>
+
+          <div class='control-grid'>
+            <label>
+              Symbol
+              <select id='symbol'>
+                <option value='AAPL' selected>AAPL</option>
+                <option value='AMZN'>AMZN</option>
+                <option value='GOOGL'>GOOGL</option>
+                <option value='META'>META</option>
+                <option value='MSFT'>MSFT</option>
+                <option value='NVDA'>NVDA</option>
+                <option value='QQQ'>QQQ</option>
+                <option value='SPY'>SPY</option>
+                <option value='TSLA'>TSLA</option>
+              </select>
+            </label>
+            <label>
+              Security Type
+              <select id='sec-type'>
+                <option value='STK' selected>STK</option>
+                <option value='IND'>IND</option>
+                <option value='FUT'>FUT</option>
+                <option value='OPT'>OPT</option>
+                <option value='CASH'>CASH</option>
+              </select>
+            </label>
+            <label>
+              Exchange
+              <select id='exchange'>
+                <option value='SMART' selected>SMART</option>
+                <option value='NASDAQ'>NASDAQ</option>
+                <option value='NYSE'>NYSE</option>
+                <option value='ARCA'>ARCA</option>
+                <option value='CBOE'>CBOE</option>
+              </select>
+            </label>
+            <label>
+              Currency
+              <select id='currency'>
+                <option value='USD' selected>USD</option>
+                <option value='EUR'>EUR</option>
+                <option value='GBP'>GBP</option>
+                <option value='CAD'>CAD</option>
+                <option value='JPY'>JPY</option>
+              </select>
+            </label>
+            <label>
+              History Duration
+              <select id='duration'>
+                <option value='300 S'>300 S</option>
+                <option value='900 S'>900 S</option>
+                <option value='1800 S' selected>1800 S</option>
+                <option value='3600 S'>3600 S</option>
+                <option value='14400 S'>14400 S</option>
+                <option value='1 D'>1 D</option>
+                <option value='1 W'>1 W</option>
+                <option value='30 D'>30 D</option>
+                <option value='90 D'>90 D</option>
+                <option value='180 D'>180 D</option>
+                <option value='1 Y'>1 Y</option>
+              </select>
+            </label>
+            <label>
+              Bar Size
+              <select id='bar-size'>
+                <option value='5 secs' selected>5 sec</option>
+                <option value='1 min'>1 min</option>
+                <option value='5 mins'>5 min</option>
+                <option value='15 mins'>15 min</option>
+                <option value='30 mins'>30 min</option>
+                <option value='1 hour'>Hourly</option>
+                <option value='4 hours'>4 hour</option>
+                <option value='1 day'>Daily</option>
+                <option value='1 week'>Weekly</option>
+              </select>
+            </label>
+            <label>
+              Browser Poll Seconds
+              <select id='poll-seconds'>
+                <option value='1' selected>1</option>
+                <option value='2'>2</option>
+                <option value='5'>5</option>
+                <option value='10'>10</option>
+                <option value='15'>15</option>
+                <option value='30'>30</option>
+              </select>
+            </label>
+            <label>
+              Include Extended Hours
+              <select id='use-rth'>
+                <option value='0' selected>No, include extended hours</option>
+                <option value='1'>Yes, regular session only</option>
+              </select>
+            </label>
+          </div>
+
+          <details class='advanced-panel'>
+            <summary>Advanced feed fields</summary>
+            <div class='advanced-grid'>
+              <label class='span-2'>
+                WebSocket URL
+                <input id='websocket-url' value='ws://127.0.0.1:8765'>
+              </label>
+              <label>
+                Stream Mode
+                <select id='stream-mode'>
+                  <option value='historical'>Historical bars only</option>
+                  <option value='hybrid' selected>Bars + tick overlay</option>
+                </select>
+              </label>
+              <label>
+                Market Data Type
+                <select id='market-data-type'>
+                  <option value='1' selected>1 - Live</option>
+                  <option value='2'>2 - Frozen</option>
+                  <option value='3'>3 - Delayed</option>
+                  <option value='4'>4 - Delayed Frozen</option>
+                </select>
+              </label>
+              <label class='span-2'>
+                Generic Ticks
+                <input id='generic-ticks' value='233'>
+              </label>
+            </div>
+          </details>
+
+          <div class='hint'>
+            Start one background collector first and keep the browser pointed at the shared database.
+            <strong>./ib_gateway historical --db data/ib_market_data.db --host 172.23.80.1 --port 7497 --client-id 9 --symbol AAPL --exchange SMART --currency USD --duration '1800 S' --bar-size '1 secs' --what-to-show TRADES --use-rth 0 --keep-up-to-date true --poll-seconds 15 --runtime-seconds 0</strong>
+          </div>
+        </section>
+
+        <section class='panel log-wrap'>
+          <div class='log-head'>
+            <div>
+              <p class='eyebrow'>Feed Log</p>
+              <h2>Activity</h2>
+            </div>
+            <div class='log-chip'>SQLite only</div>
+          </div>
+          <div class='log-list' id='log-list'></div>
+        </section>
+      </aside>
+    </main>
+  </div>
+
+  <script>
+    const elements = {
+      websocketUrl: document.getElementById('websocket-url'),
+      symbol: document.getElementById('symbol'),
+      secType: document.getElementById('sec-type'),
+      exchange: document.getElementById('exchange'),
+      currency: document.getElementById('currency'),
+      streamMode: document.getElementById('stream-mode'),
+      marketDataType: document.getElementById('market-data-type'),
+      duration: document.getElementById('duration'),
+      barSize: document.getElementById('bar-size'),
+      useRth: document.getElementById('use-rth'),
+      pollSeconds: document.getElementById('poll-seconds'),
+      genericTicks: document.getElementById('generic-ticks'),
+      connectBtn: document.getElementById('connect-btn'),
+      stopBtn: document.getElementById('stop-btn'),
+      statusPill: document.getElementById('status-pill'),
+      statusNote: document.getElementById('status-note'),
+      heroSymbol: document.getElementById('hero-symbol'),
+      marketTag: document.getElementById('market-tag'),
+      heroSummary: document.getElementById('hero-summary'),
+      chartCaption: document.getElementById('chart-caption'),
+      metricLast: document.getElementById('metric-last'),
+      metricChange: document.getElementById('metric-change'),
+      metricBid: document.getElementById('metric-bid'),
+      metricAsk: document.getElementById('metric-ask'),
+      metricTime: document.getElementById('metric-time'),
+      metricBars: document.getElementById('metric-bars'),
+      metricWindow: document.getElementById('metric-window'),
+      metricLag: document.getElementById('metric-lag'),
+      metricPoll: document.getElementById('metric-poll'),
+      metricMode: document.getElementById('metric-mode'),
+      metricSpan: document.getElementById('metric-span'),
+      logList: document.getElementById('log-list'),
+      chart: document.getElementById('chart'),
+      workspace: document.getElementById('workspace'),
+      mainStage: document.getElementById('main-stage'),
+    };
+
+    let historyPollTimer = null;
+    let historyBars = [];
+    let currentStreamMode = 'historical';
+    let historyPollIntervalMs = 5000;
+    let cacheRefreshInFlight = false;
+    let isStreaming = false;
+    let cacheSeedCount = 0;
+    let lastCacheMessage = '';
+    let watchSettingsTimer = null;
+    let pendingWatchRefresh = false;
+    const chartResizeState = {
+      frame: null,
+      observer: null,
+    };
+    const tickSeries = {
+      LAST: [],
+      BID: [],
+      ASK: [],
+    };
+    const latestPrices = {
+      LAST: null,
+      BID: null,
+      ASK: null,
+    };
+    const watchSettingElements = [
+      elements.symbol,
+      elements.secType,
+      elements.exchange,
+      elements.currency,
+      elements.duration,
+      elements.barSize,
+      elements.pollSeconds,
+      elements.useRth,
+    ];
+    const barSizeDurationPresets = {
+      '1 secs': { defaultDuration: '1800 S', durations: ['300 S', '900 S', '1800 S'] },
+      '5 secs': { defaultDuration: '1800 S', durations: ['300 S', '900 S', '1800 S', '3600 S'] },
+      '1 min': { defaultDuration: '14400 S', durations: ['900 S', '1800 S', '3600 S', '14400 S', '1 D', '1 W'] },
+      '5 mins': { defaultDuration: '1 D', durations: ['3600 S', '14400 S', '1 D', '1 W', '30 D'] },
+      '15 mins': { defaultDuration: '1 W', durations: ['14400 S', '1 D', '1 W', '30 D', '90 D'] },
+      '30 mins': { defaultDuration: '1 W', durations: ['1 D', '1 W', '30 D', '90 D', '180 D'] },
+      '1 hour': { defaultDuration: '30 D', durations: ['1 D', '1 W', '30 D', '90 D', '180 D', '1 Y'] },
+      '4 hours': { defaultDuration: '90 D', durations: ['1 W', '30 D', '90 D', '180 D', '1 Y'] },
+      '1 day': { defaultDuration: '1 Y', durations: ['30 D', '90 D', '180 D', '1 Y'] },
+      '1 week': { defaultDuration: '1 Y', durations: ['180 D', '1 Y'] },
+    };
+
+    function setStatus(kind, text, note) {
+      const tone = kind || 'live';
+      elements.statusPill.textContent = text;
+      elements.statusPill.className = `status-pill ${tone}`;
+      elements.statusNote.textContent = note;
+      elements.metricMode.textContent = text;
+    }
+
+    function logMessage(payload) {
+      const entry = document.createElement('div');
+      entry.className = 'log-entry';
+      entry.textContent = JSON.stringify(payload, null, 2);
+      elements.logList.prepend(entry);
+      while (elements.logList.children.length > 24) {
+        elements.logList.removeChild(elements.logList.lastChild);
+      }
+    }
+
+    function normalizeField(field) {
+      const compact = String(field || '').toUpperCase().replace(/[\s_]/g, '');
+      if (compact === 'LAST' || compact === 'CLOSE' || compact === 'DELAYEDLAST') {
+        return 'LAST';
+      }
+      if (compact === 'BID' || compact === 'DELAYEDBID') {
+        return 'BID';
+      }
+      if (compact === 'ASK' || compact === 'DELAYEDASK') {
+        return 'ASK';
+      }
+      return '';
+    }
+
+    function parseIbTimestamp(value) {
+      const text = String(value || '').trim().replace(/\s+/g, ' ');
+      if (!text) {
+        return null;
+      }
+      if (/^\d{8}$/.test(text)) {
+        return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
+      }
+      if (/^\d{8} \d{2}:\d{2}:\d{2}$/.test(text)) {
+        return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}T${text.slice(9)}`;
+      }
+      if (/^\d{10,13}(\.\d+)?$/.test(text)) {
+        const numeric = Number(text);
+        const millis = text.length >= 13 ? numeric : numeric * 1000;
+        return new Date(millis).toISOString();
+      }
+      return text;
+    }
+
+    function formatPrice(value) {
+      if (value === null || value === undefined || Number.isNaN(Number(value))) {
+        return '--';
+      }
+      return Number(value).toFixed(2);
+    }
+
+    function formatClockTime(value) {
+      const parsed = new Date(value);
+      if (!Number.isFinite(parsed.getTime())) {
+        return '--';
+      }
+      return parsed.toLocaleTimeString([], {
+        hour: 'numeric',
+        minute: '2-digit',
+        second: '2-digit',
+      });
+    }
+
+    function formatLagLabel(lagMs) {
+      if (lagMs === null) {
+        return '--';
+      }
+
+      const lagSeconds = Math.round(lagMs / 1000);
+      if (lagSeconds <= 1) {
+        return 'Live now';
+      }
+      if (lagSeconds < 90) {
+        return `${lagSeconds}s behind`;
+      }
+
+      const lagMinutes = Math.round(lagSeconds / 60);
+      return `${lagMinutes}m behind`;
+    }
+
+    function formatChangeLabel(change, percentChange) {
+      if (!Number.isFinite(change)) {
+        return { text: 'No move yet', tone: 'neutral' };
+      }
+
+      const tone = change > 0 ? 'positive' : change < 0 ? 'negative' : 'neutral';
+      const sign = change > 0 ? '+' : change < 0 ? '-' : '';
+      const priceText = `${sign}$${Math.abs(change).toFixed(2)}`;
+      const percentText = Number.isFinite(percentChange) ? ` · ${sign}${Math.abs(percentChange).toFixed(2)}%` : '';
+      return {
+        text: `${priceText}${percentText}`,
+        tone,
+      };
+    }
+
+    function hasTickOverlay() {
+      return tickSeries.LAST.length > 0 || tickSeries.BID.length > 0 || tickSeries.ASK.length > 0;
+    }
+
+    function getHistoricalLagMs() {
+      const lastBar = historyBars[historyBars.length - 1] || null;
+      if (!lastBar) {
+        return null;
+      }
+
+      const lastBarTimeMs = new Date(lastBar.time).getTime();
+      if (!Number.isFinite(lastBarTimeMs)) {
+        return null;
+      }
+
+      return Math.max(0, Date.now() - lastBarTimeMs);
+    }
+
+    function describeHistoricalLag() {
+      const lagMs = getHistoricalLagMs();
+      if (lagMs === null) {
+        return '';
+      }
+
+      const lagSeconds = Math.round(lagMs / 1000);
+      if (lagSeconds <= 1) {
+        return 'Historical bars are current with IBKR server time.';
+      }
+      if (lagSeconds < 90) {
+        return `Historical bars are about ${lagSeconds} second(s) behind IBKR server time.`;
+      }
+
+      const lagMinutes = Math.round(lagSeconds / 60);
+      return `Historical bars are about ${lagMinutes} minute(s) behind IBKR server time.`;
+    }
+
+    function clearHistoryPollTimer() {
+      if (historyPollTimer !== null) {
+        window.clearTimeout(historyPollTimer);
+        historyPollTimer = null;
+      }
+    }
+
+    function clearWatchSettingsTimer() {
+      if (watchSettingsTimer !== null) {
+        window.clearTimeout(watchSettingsTimer);
+        watchSettingsTimer = null;
+      }
+    }
+
+    function ensureSelectOption(element, value) {
+      if (!element || element.tagName !== 'SELECT' || !value) {
+        return;
+      }
+
+      const normalizedValue = String(value);
+      const exists = Array.from(element.options).some((option) => option.value === normalizedValue);
+      if (exists) {
+        return;
+      }
+
+      const option = document.createElement('option');
+      option.value = normalizedValue;
+      option.textContent = normalizedValue;
+      element.appendChild(option);
+    }
+
+    function replaceSelectOptions(element, optionValues, selectedValue) {
+      if (!element || element.tagName !== 'SELECT') {
+        return;
+      }
+
+      element.innerHTML = '';
+      optionValues.forEach((value) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = value;
+        element.appendChild(option);
+      });
+
+      if (selectedValue) {
+        ensureSelectOption(element, selectedValue);
+        element.value = selectedValue;
+      }
+    }
+
+    function syncDurationOptionsForBarSize(preferredDuration = null, keepCurrentDuration = false) {
+      const preset = barSizeDurationPresets[elements.barSize.value.trim()];
+      if (!preset) {
+        return;
+      }
+
+      const currentDuration = elements.duration.value.trim();
+      const nextDuration = preset.durations.includes(String(preferredDuration || '').trim())
+        ? String(preferredDuration).trim()
+        : keepCurrentDuration && preset.durations.includes(currentDuration)
+          ? currentDuration
+          : preset.defaultDuration;
+
+      replaceSelectOptions(elements.duration, preset.durations, nextDuration);
+    }
+
+    function currentContract() {
+      return {
+        symbol: elements.symbol.value.trim().toUpperCase(),
+        secType: elements.secType.value.trim().toUpperCase(),
+        exchange: elements.exchange.value.trim().toUpperCase(),
+        currency: elements.currency.value.trim().toUpperCase(),
+      };
+    }
+
+    function resolvePollIntervalMs() {
+      const parsedSeconds = Number.parseInt(elements.pollSeconds.value, 10);
+      const safeSeconds = Number.isFinite(parsedSeconds) && parsedSeconds > 0 ? parsedSeconds : 5;
+      elements.pollSeconds.value = String(safeSeconds);
+      return safeSeconds * 1000;
+    }
+
+    function parseIntervalSeconds(value) {
+      const match = String(value || '').trim().toLowerCase().match(/^(\d+)\s*([a-z]+)$/);
+      if (!match) {
+        return null;
+      }
+
+      const amount = Number.parseInt(match[1], 10);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return null;
+      }
+
+      const unit = match[2];
+      const unitSeconds = {
+        s: 1,
+        sec: 1,
+        secs: 1,
+        second: 1,
+        seconds: 1,
+        m: 60,
+        min: 60,
+        mins: 60,
+        minute: 60,
+        minutes: 60,
+        h: 3600,
+        hr: 3600,
+        hrs: 3600,
+        hour: 3600,
+        hours: 3600,
+        d: 86400,
+        day: 86400,
+        days: 86400,
+        w: 604800,
+        week: 604800,
+        weeks: 604800,
+        y: 31536000,
+        year: 31536000,
+        years: 31536000,
+      }[unit];
+
+      return unitSeconds ? amount * unitSeconds : null;
+    }
+
+    const MAX_DISPLAY_BARS = 20000;
+
+    function currentCacheLimit() {
+      const durationSeconds = parseIntervalSeconds(elements.duration.value) || 1800;
+      const barSeconds = parseIntervalSeconds(elements.barSize.value) || 5;
+      const estimatedBars = Math.ceil(durationSeconds / Math.max(barSeconds, 1)) + 5;
+      return Math.max(50, Math.min(MAX_DISPLAY_BARS, estimatedBars));
+    }
+
+    function currentLiveTailDuration() {
+      if (cacheSeedCount <= 0) {
+        return elements.duration.value.trim();
+      }
+
+      const durationSeconds = parseIntervalSeconds(elements.duration.value);
+      const barSeconds = parseIntervalSeconds(elements.barSize.value);
+      const lastCachedBar = historyBars[historyBars.length - 1] || null;
+      if (!durationSeconds || !barSeconds || !lastCachedBar) {
+        return elements.duration.value.trim();
+      }
+
+      const lastCachedBarMs = new Date(lastCachedBar.time).getTime();
+      if (!Number.isFinite(lastCachedBarMs)) {
+        return elements.duration.value.trim();
+      }
+
+      const gapSeconds = Math.max(0, Math.ceil((Date.now() - lastCachedBarMs) / 1000));
+      const uncoveredWindowSeconds = Math.max(barSeconds, gapSeconds);
+      const roundedWindowSeconds = Math.ceil(uncoveredWindowSeconds / barSeconds) * barSeconds;
+      const recentWindowSeconds = Math.min(durationSeconds, roundedWindowSeconds);
+      return `${recentWindowSeconds} S`;
+    }
+
+    function updateMarketTag() {
+      const lagMs = getHistoricalLagMs();
+      if (lagMs === null) {
+        elements.marketTag.textContent = 'Waiting for bars';
+        elements.marketTag.className = 'market-tag idle';
+        return;
+      }
+
+      if (lagMs >= 120000) {
+        elements.marketTag.textContent = 'Delayed cache';
+        elements.marketTag.className = 'market-tag delayed';
+        return;
+      }
+
+      elements.marketTag.textContent = 'Fresh cache';
+      elements.marketTag.className = 'market-tag live';
+    }
+
+    function updateMetrics() {
+      const contract = currentContract();
+      const lastBar = historyBars[historyBars.length - 1] || null;
+      const firstBar = historyBars[0] || null;
+      const windowHigh = historyBars.length ? Math.max(...historyBars.map((row) => row.high)) : null;
+      const windowLow = historyBars.length ? Math.min(...historyBars.map((row) => row.low)) : null;
+      const anchorPrice = firstBar ? firstBar.open : null;
+      const closingPrice = lastBar ? lastBar.close : null;
+      const changeValue = Number.isFinite(anchorPrice) && Number.isFinite(closingPrice) ? closingPrice - anchorPrice : NaN;
+      const changePercent = Number.isFinite(anchorPrice) && anchorPrice !== 0 && Number.isFinite(changeValue)
+        ? (changeValue / anchorPrice) * 100
+        : NaN;
+      const changeMeta = formatChangeLabel(changeValue, changePercent);
+
+      elements.heroSymbol.textContent = contract.symbol || '--';
+      elements.metricLast.textContent = formatPrice(latestPrices.LAST ?? closingPrice);
+      elements.metricBid.textContent = formatPrice(windowHigh);
+      elements.metricAsk.textContent = formatPrice(windowLow);
+      elements.metricTime.textContent = lastBar ? formatClockTime(lastBar.time) : '--';
+      elements.metricBars.textContent = historyBars.length ? historyBars.length.toLocaleString() : '--';
+      elements.metricWindow.textContent = `${elements.duration.value.trim()} / ${elements.barSize.value.trim()}`;
+      elements.metricLag.textContent = formatLagLabel(getHistoricalLagMs());
+      elements.metricPoll.textContent = `${elements.pollSeconds.value || '1'}s browser`;
+      elements.metricSpan.textContent = firstBar && lastBar
+        ? `${formatClockTime(firstBar.time)} to ${formatClockTime(lastBar.time)}`
+        : 'Waiting for bars';
+      elements.metricChange.textContent = changeMeta.text;
+      elements.metricChange.className = `change-pill ${changeMeta.tone}`;
+      elements.metricMode.textContent = isStreaming ? 'Streaming' : 'Idle';
+      elements.heroSummary.textContent = historyBars.length
+        ? `Showing ${historyBars.length.toLocaleString()} cached ${elements.barSize.value.trim()} bars for ${contract.symbol}. Resize the browser and the chart pane stretches with the window.`
+        : 'Start local polling and this page will surface cached bars in a full-window layout sized to the browser.';
+      elements.chartCaption.textContent = historyBars.length
+        ? `Close-price and volume view across ${elements.duration.value.trim()} using the local SQLite cache only.`
+        : 'The chart fills the remaining window height and keeps reading only from the SQLite-backed dashboard API.';
+      updateMarketTag();
+    }
+
+    function scheduleChartResize() {
+      if (chartResizeState.frame !== null) {
+        window.cancelAnimationFrame(chartResizeState.frame);
+      }
+
+      chartResizeState.frame = window.requestAnimationFrame(() => {
+        chartResizeState.frame = null;
+        const viewportHeight = window.innerHeight || 0;
+        const baseHeight = window.innerWidth <= 640
+          ? Math.max(320, Math.min(520, Math.round(viewportHeight * 0.55)))
+          : Math.max(380, Math.min(760, Math.round(viewportHeight - 290)));
+        elements.chart.style.height = `${baseHeight}px`;
+        if (elements.chart && elements.chart.data) {
+          Plotly.Plots.resize(elements.chart);
+        }
+      });
+    }
+
+    function scheduleWatchSettingsRefresh() {
+      clearWatchSettingsTimer();
+      pendingWatchRefresh = false;
+      historyPollIntervalMs = resolvePollIntervalMs();
+
+      if (!isStreaming) {
+        updateMetrics();
+        renderChart();
+        return;
+      }
+
+      const contract = currentContract();
+      setStatus('warn', 'Updating', `Refreshing cached bars for ${contract.symbol} with the new watch settings.`);
+      watchSettingsTimer = window.setTimeout(() => {
+        watchSettingsTimer = null;
+        if (cacheRefreshInFlight) {
+          pendingWatchRefresh = true;
+          return;
+        }
+        void startStream().catch(handleStartError);
+      }, 180);
+    }
+
+    async function loadCachedBars(contract) {
+      const params = new URLSearchParams({
+        symbol: contract.symbol,
+        secType: contract.secType,
+        exchange: contract.exchange,
+        currency: contract.currency,
+        duration: elements.duration.value.trim(),
+        whatToShow: 'TRADES',
+        barSize: elements.barSize.value.trim(),
+        useRTH: String(Number(elements.useRth.value)),
+        limit: String(currentCacheLimit()),
+      });
+
+      const response = await fetch(`/api/bars?${params.toString()}`, { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error(`cache request failed with HTTP ${response.status}`);
+      }
+
+      const payload = await response.json();
+      lastCacheMessage = payload && typeof payload.message === 'string' ? payload.message.trim() : '';
+      const cachedBars = Array.isArray(payload.bars) ? payload.bars : [];
+      if (!cachedBars.length) {
+        historyBars = [];
+        updateMetrics();
+        renderChart();
+        if (lastCacheMessage) {
+          setStatus('warn', 'No Data', lastCacheMessage);
+        }
+        return 0;
+      }
+
+      historyBars = cachedBars
+        .map((row) => ({
+          time: parseIbTimestamp(row.time),
+          open: Number(row.open),
+          high: Number(row.high),
+          low: Number(row.low),
+          close: Number(row.close),
+          volume: Number.isFinite(Number(row.volume)) ? Number(row.volume) : 0,
+        }))
+        .filter((row) => row.time && [row.open, row.high, row.low, row.close].every((value) => Number.isFinite(value)));
+
+      historyBars.sort((left, right) => new Date(left.time).getTime() - new Date(right.time).getTime());
+      while (historyBars.length > currentCacheLimit()) {
+        historyBars.shift();
+      }
+
+      cacheSeedCount = historyBars.length;
+      updateMetrics();
+      renderChart();
+      return cacheSeedCount;
+    }
+
+    function scheduleDatabaseRefresh() {
+      if (!isStreaming) {
+        return;
+      }
+      clearHistoryPollTimer();
+      historyPollTimer = window.setTimeout(() => {
+        void refreshFromDatabase(currentContract());
+      }, historyPollIntervalMs);
+    }
+
+    function upsertHistoricalBar(payload) {
+      const time = parseIbTimestamp(payload.time);
+      if (!time) {
+        return;
+      }
+
+      const nextBar = {
+        time,
+        open: Number(payload.open),
+        high: Number(payload.high),
+        low: Number(payload.low),
+        close: Number(payload.close),
+        volume: Number.isFinite(Number(payload.volume)) ? Number(payload.volume) : 0,
+      };
+
+      const existingIndex = historyBars.findIndex((row) => row.time === time);
+      if (existingIndex >= 0) {
+        historyBars[existingIndex] = nextBar;
+      } else {
+        historyBars.push(nextBar);
+        historyBars.sort((left, right) => new Date(left.time).getTime() - new Date(right.time).getTime());
+      }
+
+      while (historyBars.length > currentCacheLimit()) {
+        historyBars.shift();
+      }
+    }
+
+    function resetSeries() {
+      clearHistoryPollTimer();
+      cacheSeedCount = 0;
+      historyBars = [];
+      tickSeries.LAST = [];
+      tickSeries.BID = [];
+      tickSeries.ASK = [];
+      latestPrices.LAST = null;
+      latestPrices.BID = null;
+      latestPrices.ASK = null;
+      updateMetrics();
+      renderChart();
+    }
+
+    function renderChart() {
+      const barTimes = historyBars.map((row) => row.time);
+      const closePrices = historyBars.map((row) => row.close);
+      const lowPrices = historyBars.map((row) => row.low);
+      const highPrices = historyBars.map((row) => row.high);
+      const volumeValues = historyBars.map((row) => row.volume || 0);
+      const volumeColors = historyBars.map((row) => row.close >= row.open
+        ? 'rgba(0, 200, 5, 0.45)'
+        : 'rgba(255, 91, 53, 0.45)');
+      const firstClose = closePrices.length ? closePrices[0] : null;
+      const lastClose = closePrices.length ? closePrices[closePrices.length - 1] : null;
+      const rising = lastClose === null || firstClose === null ? true : lastClose >= firstClose;
+      const trendColor = rising ? '#00c805' : '#ff5b35';
+      const fillColor = rising ? 'rgba(0, 200, 5, 0.14)' : 'rgba(255, 91, 53, 0.12)';
+      const priceFloor = lowPrices.length ? Math.min(...lowPrices) : null;
+      const priceCeiling = highPrices.length ? Math.max(...highPrices) : null;
+      const padding = priceFloor !== null && priceCeiling !== null
+        ? Math.max((priceCeiling - priceFloor) * 0.18, 0.08)
+        : 0.5;
+      const baseline = priceFloor !== null ? priceFloor - padding : null;
+      const data = [];
+
+      if (barTimes.length && baseline !== null) {
+        data.push({
+          type: 'scatter',
+          mode: 'lines',
+          xaxis: 'x',
+          yaxis: 'y',
+          x: barTimes,
+          y: barTimes.map(() => baseline),
+          line: { color: 'rgba(0, 0, 0, 0)' },
+          hoverinfo: 'skip',
+          showlegend: false,
+        });
+      }
+
+      data.push({
+        type: 'scatter',
+        mode: 'lines',
+        xaxis: 'x',
+        yaxis: 'y',
+        x: barTimes,
+        y: closePrices,
+        name: 'Close',
+        fill: barTimes.length ? 'tonexty' : undefined,
+        fillcolor: fillColor,
+        line: { color: trendColor, width: 3.2 },
+        customdata: historyBars.map((row) => [row.open, row.high, row.low, row.close, row.volume || 0]),
+        hovertemplate: '%{x}<br>Open %{customdata[0]:.2f}<br>High %{customdata[1]:.2f}<br>Low %{customdata[2]:.2f}<br>Close %{customdata[3]:.2f}<br>Volume %{customdata[4]:,.0f}<extra></extra>',
+      });
+
+      if (barTimes.length && lastClose !== null) {
+        data.push({
+          type: 'scatter',
+          mode: 'markers',
+          xaxis: 'x',
+          yaxis: 'y',
+          x: [barTimes[barTimes.length - 1]],
+          y: [lastClose],
+          marker: {
+            size: 11,
+            color: '#ffffff',
+            line: { color: trendColor, width: 3 },
+          },
+          hoverinfo: 'skip',
+          showlegend: false,
+        });
+      }
+
+      if (barTimes.length) {
+        data.push({
+          type: 'bar',
+          xaxis: 'x2',
+          yaxis: 'y2',
+          x: barTimes,
+          y: volumeValues,
+          name: 'Volume',
+          marker: {
+            color: volumeColors,
+            line: { width: 0 },
+          },
+          opacity: 0.92,
+          hovertemplate: '%{x}<br>Volume %{y:,.0f}<extra></extra>',
+        });
+      }
+
+      if (tickSeries.LAST.length > 0) {
+        data.push({
+          type: 'scatter',
+          mode: 'lines+markers',
+          xaxis: 'x',
+          yaxis: 'y',
+          x: tickSeries.LAST.map((row) => row.x),
+          y: tickSeries.LAST.map((row) => row.y),
+          name: 'Last tick',
+          line: { color: '#1663ff', width: 2 },
+          marker: { size: 4 },
+        });
+      }
+
+      if (tickSeries.BID.length > 0) {
+        data.push({
+          type: 'scatter',
+          mode: 'lines',
+          xaxis: 'x',
+          yaxis: 'y',
+          x: tickSeries.BID.map((row) => row.x),
+          y: tickSeries.BID.map((row) => row.y),
+          name: 'Bid',
+          line: { color: '#0f766e', width: 1.6 },
+        });
+      }
+
+      if (tickSeries.ASK.length > 0) {
+        data.push({
+          type: 'scatter',
+          mode: 'lines',
+          xaxis: 'x',
+          yaxis: 'y',
+          x: tickSeries.ASK.map((row) => row.x),
+          y: tickSeries.ASK.map((row) => row.y),
+          name: 'Ask',
+          line: { color: '#db2777', width: 1.6 },
+        });
+      }
+
+      const layout = {
+        paper_bgcolor: 'rgba(0, 0, 0, 0)',
+        plot_bgcolor: 'rgba(0, 0, 0, 0)',
+        margin: { l: 18, r: 24, t: 8, b: 28 },
+        showlegend: hasTickOverlay(),
+        dragmode: 'pan',
+        bargap: 0.14,
+        legend: {
+          orientation: 'h',
+          x: 0,
+          y: 1.12,
+          bgcolor: 'rgba(255, 255, 255, 0.75)',
+          bordercolor: 'rgba(15, 23, 42, 0.08)',
+          borderwidth: 1,
+          font: { size: 11 },
+        },
+        xaxis: {
+          domain: [0, 1],
+          anchor: 'y',
+          rangeslider: { visible: false },
+          gridcolor: 'rgba(15, 23, 42, 0.06)',
+          linecolor: 'rgba(15, 23, 42, 0.08)',
+          tickfont: { color: '#667085' },
+          automargin: true,
+          zeroline: false,
+          showticklabels: false,
+        },
+        yaxis: {
+          domain: [0.30, 1],
+          gridcolor: 'rgba(15, 23, 42, 0.06)',
+          tickfont: { color: '#667085' },
+          automargin: true,
+          zeroline: false,
+          side: 'right',
+          tickformat: '.2f',
+        },
+        xaxis2: {
+          domain: [0, 1],
+          anchor: 'y2',
+          matches: 'x',
+          gridcolor: 'rgba(15, 23, 42, 0.04)',
+          linecolor: 'rgba(15, 23, 42, 0.08)',
+          tickfont: { color: '#667085' },
+          automargin: true,
+          zeroline: false,
+        },
+        yaxis2: {
+          domain: [0, 0.20],
+          gridcolor: 'rgba(15, 23, 42, 0.04)',
+          tickfont: { color: '#667085' },
+          automargin: true,
+          zeroline: false,
+          side: 'right',
+          fixedrange: true,
+          tickformat: '~s',
+          title: {
+            text: 'Vol',
+            font: { size: 11, color: '#667085' },
+          },
+        },
+        hovermode: 'x unified',
+        hoversubplots: 'axis',
+        hoverlabel: {
+          bgcolor: '#101828',
+          bordercolor: 'rgba(255, 255, 255, 0.08)',
+          font: { color: '#f8fafc' },
+        },
+        font: {
+          family: 'Manrope, IBM Plex Sans, Segoe UI, sans-serif',
+          color: '#0f172a',
+        },
+        uirevision: `${elements.symbol.value.trim()}-${elements.barSize.value.trim()}`,
+      };
+
+      Plotly.react(elements.chart, data, layout, {
+        responsive: true,
+        displaylogo: false,
+        scrollZoom: true,
+        modeBarButtonsToRemove: ['lasso2d', 'select2d', 'autoScale2d', 'hoverCompareCartesian', 'toggleSpikelines'],
+      });
+      scheduleChartResize();
+    }
+
+    function stopStream() {
+      clearHistoryPollTimer();
+      clearWatchSettingsTimer();
+      pendingWatchRefresh = false;
+      isStreaming = false;
+      setStatus('warn', 'Paused', 'Local cache polling is stopped.');
+      updateMetrics();
+    }
+
+    function logCacheRefresh(contract, rowCount) {
+      const latestBar = historyBars[historyBars.length - 1] || null;
+      logMessage({
+        type: 'cache.refresh',
+        symbol: contract.symbol,
+        bars: rowCount,
+        latestBarTime: latestBar ? latestBar.time : '',
+        pollSeconds: Number(elements.pollSeconds.value),
+      });
+    }
+
+    async function refreshFromDatabase(contract) {
+      if (cacheRefreshInFlight) {
+        return;
+      }
+
+      cacheRefreshInFlight = true;
+      try {
+        const rowCount = await loadCachedBars(contract);
+        const lagText = describeHistoricalLag();
+
+        if (!rowCount) {
+          setStatus(
+            'warn',
+            'No Data',
+            lastCacheMessage || `No cached bars found for ${contract.symbol}. Start the collector to populate SQLite.`,
+          );
+        } else if (getHistoricalLagMs() !== null && getHistoricalLagMs() >= 120000) {
+          setStatus(
+            'warn',
+            'Delayed',
+            `${lagText} The browser is reading only from SQLite. Any remaining lag is coming from the collector or IBKR feed, not from this page.`,
+          );
+        } else {
+          setStatus(
+            'live',
+            'Streaming',
+            lagText || `Reading ${rowCount} cached bars from SQLite every ${elements.pollSeconds.value} second(s).`,
+          );
+        }
+
+        logCacheRefresh(contract, rowCount);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setStatus('error', 'Cache Error', message);
+      } finally {
+        cacheRefreshInFlight = false;
+        if (pendingWatchRefresh && isStreaming) {
+          pendingWatchRefresh = false;
+          void startStream().catch(handleStartError);
+          return;
+        }
+        scheduleDatabaseRefresh();
+      }
+    }
+
+    async function startStream() {
+      currentStreamMode = elements.streamMode.value;
+      historyPollIntervalMs = resolvePollIntervalMs();
+      const contract = currentContract();
+
+      if (isStreaming || historyBars.length > 0) {
+        stopStream();
+      }
+      resetSeries();
+      isStreaming = true;
+
+      setStatus(
+        'warn',
+        'Loading',
+        `Loading cached bars for ${contract.symbol} from SQLite and starting local polling.`,
+      );
+
+      await refreshFromDatabase(contract);
+    }
+
+    function handleStartError(error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus('error', 'Error', message);
+    }
+
+    function connectAndStream() {
+      void startStream().catch(handleStartError);
+    }
+
+    function hydrateFromQuery() {
+      const query = new URLSearchParams(window.location.search);
+      const mappings = [
+        ['websocketUrl', elements.websocketUrl],
+        ['symbol', elements.symbol],
+        ['secType', elements.secType],
+        ['exchange', elements.exchange],
+        ['currency', elements.currency],
+        ['streamMode', elements.streamMode],
+        ['marketDataType', elements.marketDataType],
+        ['duration', elements.duration],
+        ['barSize', elements.barSize],
+        ['useRTH', elements.useRth],
+        ['pollSeconds', elements.pollSeconds],
+        ['genericTicks', elements.genericTicks],
+      ];
+
+      for (const [key, element] of mappings) {
+        if (query.has(key)) {
+          const value = query.get(key);
+          ensureSelectOption(element, value);
+          element.value = value;
+        }
+      }
+
+      syncDurationOptionsForBarSize(query.get('duration'), true);
+
+      return query.get('autoStart') === '1';
+    }
+
+    elements.connectBtn.addEventListener('click', connectAndStream);
+    elements.stopBtn.addEventListener('click', stopStream);
+    elements.barSize.addEventListener('change', () => {
+      syncDurationOptionsForBarSize();
+    });
+    watchSettingElements.forEach((element) => {
+      element.addEventListener('change', scheduleWatchSettingsRefresh);
+    });
+    window.addEventListener('resize', scheduleChartResize);
+
+    if ('ResizeObserver' in window) {
+      chartResizeState.observer = new ResizeObserver(() => {
+        scheduleChartResize();
+      });
+      chartResizeState.observer.observe(elements.workspace);
+      chartResizeState.observer.observe(elements.mainStage);
+    }
+
+    const autoStart = hydrateFromQuery();
+    updateMetrics();
+    renderChart();
+    if (autoStart) {
+      connectAndStream();
+    }
+  </script>
+</body>
+</html>
