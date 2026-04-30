@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT_DIR="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+
+if [[ -n "${IB_PYTHON:-}" ]]; then
+	PYTHON_BIN="$IB_PYTHON"
+elif [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
+	PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
+else
+	PYTHON_BIN="$(command -v python3)"
+fi
+
+exec "$PYTHON_BIN" "$ROOT_DIR/ib_visualize.py" "$@"

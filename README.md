@@ -5,6 +5,7 @@ Monte Carlo experimentation in C++, now with a Python Interactive Brokers gatewa
 ## What is in the repo
 
 - `ib_gateway`: the primary Interactive Brokers CLI entrypoint. It connects to TWS or IB Gateway and emits JSONL events to stdout and an optional log file.
+- `ib_visualize`: a Plotly-based SQLite visualization CLI and local dashboard server for the data captured by `ib_gateway --db ...`.
 - `ib_event_processor`: the supported native C++ processing stage. It consumes the gateway JSONL stream and emits normalized quote and bar events for heavier downstream processing.
 - `ib_historical_store`: a native C++ persistence stage that calls `./ib_gateway`, fetches contract metadata and historical bars, and stores them in SQLite.
 - `experimental/native_ib_cpp`: the deprecated native C++ IBKR wrapper kept for reference, but not the recommended path on modern Linux because of upstream protobuf compatibility issues in the deprecated C++ SDK.
@@ -55,6 +56,14 @@ make ib_gateway
 
 This target verifies that `ibapi` is importable and marks `./ib_gateway` executable.
 
+Prepare the visualization CLI:
+
+```bash
+make ib_visualize
+```
+
+This target verifies that `plotly` is importable and marks `./ib_visualize` executable.
+
 Build only the C++ processing stage:
 
 ```bash
@@ -91,8 +100,11 @@ The recommended path in this repo is:
 1. Python `ib_gateway` handles TWS or IB Gateway connectivity and emits flat JSONL events.
 2. C++ `ib_event_processor` consumes that JSONL stream and performs the heavier normalization and processing work.
 3. Optional C++ `ib_historical_store` persists contract metadata and historical bars into SQLite when you need a storage runner.
+4. For live browser charting, run one long-lived `ib_gateway historical --keep-up-to-date true` collector against SQLite and point `ib_visualize dashboard` at the same database. The dashboard reads only from SQLite during steady-state use and can optionally bootstrap missing symbol, duration, and bar-size combinations with one short IBKR historical request.
 
 This avoids the deprecated IBKR C++ SDK while keeping the performance-sensitive stage in C++.
+
+The validated runtime shape is now: one collector process owns the historical subscription, SQLite is the shared cache, and the browser dashboard polls only the local dashboard server. SQLite connections use WAL mode plus a 5-second busy timeout so the collector and dashboard can read and write concurrently without reproducing the earlier `database is locked` failures.
 
 ## Repo Layout
 
@@ -231,6 +243,125 @@ Stream live option greeks for a specific option contract:
 That market-data request emits normal ticks and `option.greeks` events when IB provides option computation data.
 
 IB exposes historical option prices through `historical`, but it does not expose a native historical greek time series through this gateway. If you need historical delta, gamma, vega, theta, or implied-vol paths, you have to reconstruct them from historical option prices, underlying prices, rates, dividends, and a pricing model, or source them from a separate data vendor.
+
+## Visualization
+
+The visualization CLI reads the SQLite data written by `--db` and renders interactive HTML charts under `data/plots/` by default. The `dashboard` mode now serves a responsive, DB-only browser UI with a price pane, a volume subplot, status messaging for cache and bootstrap errors, and watch-setting dropdowns that auto-pair timeframe and history duration.
+
+Fetch bars into SQLite, then render a candlestick chart:
+
+```bash
+./ib_gateway historical \
+	--db data/ib_market_data.db \
+	--host 127.0.0.1 \
+	--port 7497 \
+	--client-id 7 \
+	--symbol AAPL \
+	--exchange SMART \
+	--currency USD \
+	--duration "2 D" \
+	--bar-size "5 mins" \
+	--what-to-show TRADES
+
+./ib_visualize bars \
+	--db data/ib_market_data.db \
+	--symbol AAPL \
+	--exchange SMART \
+	--currency USD \
+	--what-to-show TRADES \
+	--bar-size "5 mins" \
+	--open-browser
+```
+
+Capture live ticks into SQLite, then render a multi-line tick chart:
+
+```bash
+./ib_gateway market-data \
+	--db data/ib_market_data.db \
+	--host 127.0.0.1 \
+	--port 7497 \
+	--client-id 7 \
+	--symbol AAPL \
+	--exchange SMART \
+	--currency USD \
+	--runtime-seconds 20
+
+./ib_visualize ticks \
+	--db data/ib_market_data.db \
+	--symbol AAPL \
+	--exchange SMART \
+	--currency USD \
+	--fields Bid,Ask,Last \
+	--open-browser
+```
+
+If you are running TWS from WSL against Windows, replace `127.0.0.1` with the Windows-side adapter address that TWS actually exposes.
+
+### Live Dashboard Workflow
+
+For a live browser chart, start one historical collector first. The dashboard does not require the WebSocket bridge anymore; it reads only from SQLite and asks IBKR for data only when cache bootstrap is explicitly needed.
+
+```bash
+./ib_gateway historical \
+	--db data/ib_market_data.db \
+	--host 172.23.80.1 \
+	--port 7497 \
+	--client-id 9 \
+	--symbol AAPL \
+	--exchange SMART \
+	--currency USD \
+	--duration "1800 S" \
+	--bar-size "1 secs" \
+	--what-to-show TRADES \
+	--use-rth 0 \
+	--keep-up-to-date true \
+	--poll-seconds 15 \
+	--runtime-seconds 0
+```
+
+For delayed one-second data in this setup, `--poll-seconds 15` is the validated safe cadence. Faster loops can hit HMDS pacing violations. When delayed historical feeds stop emitting continuous `historicalDataUpdate` callbacks after the initial snapshot, the collector now falls back to a small tail refresh each cycle and upserts only the uncovered window into SQLite.
+
+Start the dashboard server against the same database:
+
+```bash
+./ib_visualize dashboard \
+	--db data/ib_market_data.db \
+	--web-host 127.0.0.1 \
+	--web-port 8000 \
+	--symbol AAPL \
+	--exchange SMART \
+	--currency USD \
+	--duration "1800 S" \
+	--bar-size "1 secs" \
+	--use-rth 0 \
+	--poll-seconds 1 \
+	--ib-host 172.23.80.1 \
+	--ib-port 7497 \
+	--ib-client-id 11 \
+	--ib-ready-timeout 15 \
+	--bootstrap-timeout 20 \
+	--bootstrap-missing 1
+```
+
+That serves a live page at `http://127.0.0.1:8000/live_ticker.html` with a cache-backed chart. The collector process owns the single IBKR historical subscription and writes bars into SQLite. Browser tabs read only from the local dashboard server, so opening more tabs does not create more IBKR requests.
+
+Current dashboard behavior and UI:
+
+- The browser polls `/api/bars` from the local dashboard server; tabs do not open IBKR connections themselves.
+- When a selected symbol, duration, or bar-size combination is missing from SQLite, the dashboard can issue one short historical request, populate SQLite, and then return to the normal DB-only path.
+- Cache and bootstrap failures now surface in the page status banner instead of silently clearing the chart.
+- The chart is window-responsive and renders volume below price in a dedicated subplot.
+- Watch settings are dropdown-based and auto-refresh the chart when changed.
+- Timeframe choices now include `5 sec`, `1 min`, `5 min`, `15 min`, `30 min`, `Hourly`, `4 hour`, `Daily`, and `Weekly`.
+- Duration choices auto-adjust to the selected bar size so the fetched historical amount matches the timeframe more naturally. Validated defaults include `1 min -> 14400 S`, `5 mins -> 1 D`, `1 hour -> 30 D`, `1 day -> 1 Y`, and `1 week -> 1 Y`.
+
+### Operational Notes
+
+- `1 D` together with `1 secs` is not a valid IBKR historical request and returns `162 invalid step`; use a shorter duration for second bars or a larger bar size.
+- Delayed one-second historical requests can hit `162 pacing violation`; `--poll-seconds 15` is the validated safer setting for the collector in this environment.
+- If your account lacks live market-data entitlements, IBKR can return `10089` for top-of-book live AAPL quotes; the delayed historical and SQLite-backed dashboard path can still work.
+- `326 client id already in use` means another TWS or IB Gateway session is already connected with that client id.
+- `[Errno 98] Address already in use` means the dashboard port is already occupied by an existing process.
 
 Request account summary values:
 

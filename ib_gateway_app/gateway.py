@@ -533,7 +533,7 @@ class IBGateway(EWrapper, EClient):
     def marketDataType(self, reqId: int, marketDataType: int) -> None:  # noqa: N802
         self.emit_event("marketData.type", reqId=reqId, marketDataType=marketDataType)
 
-    def historicalData(self, reqId: int, bar: Any) -> None:  # noqa: N802
+    def _emit_historical_bar(self, reqId: int, bar: Any, *, is_update: bool) -> None:
         self.emit_event(
             "historical.bar",
             reqId=reqId,
@@ -545,7 +545,14 @@ class IBGateway(EWrapper, EClient):
             volume=self._decimal_as_string(getattr(bar, "volume", "")),
             wap=self._decimal_as_string(getattr(bar, "wap", "")),
             count=getattr(bar, "barCount", None),
+            isUpdate=is_update,
         )
+
+    def historicalData(self, reqId: int, bar: Any) -> None:  # noqa: N802
+        self._emit_historical_bar(reqId, bar, is_update=False)
+
+    def historicalDataUpdate(self, reqId: int, bar: Any) -> None:  # noqa: N802
+        self._emit_historical_bar(reqId, bar, is_update=True)
 
     def historicalDataEnd(self, reqId: int, start: str, end: str) -> None:  # noqa: N802
         with self._state_lock:

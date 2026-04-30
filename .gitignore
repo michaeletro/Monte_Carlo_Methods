@@ -8,6 +8,7 @@
 *.db-shm
 *.db-wal
 *.jsonl
+data/plots/
 __pycache__/
 build/
 bin/

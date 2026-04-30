@@ -36,7 +36,7 @@ IB_CPP_CXXFLAGS := $(CXXFLAGS) \
 IB_CPP_LDFLAGS := -L$(IB_API_SOURCE_ROOT) -Wl,-rpath,$(IB_API_SOURCE_ROOT)
 IB_CPP_LIBS := -lbid $(PROTOBUF_LIBS) -pthread
 
-.PHONY: all build clean check_ib_python check_ib_api check_protobuf ib_gateway ib_build ib_gateway_cpp ib_processor historical_store
+.PHONY: all build clean check_ib_python check_plotly check_ib_api check_protobuf ib_gateway ib_visualize ib_build ib_gateway_cpp ib_processor historical_store
 
 all: build
 
@@ -45,6 +45,10 @@ build: $(IB_PROCESSOR_TARGET)
 ib_gateway: check_ib_python
 	@chmod +x ib_gateway ib_gateway.py
 	@echo "Interactive Brokers gateway is ready: ./ib_gateway"
+
+ib_visualize: check_plotly
+	@chmod +x ib_visualize ib_visualize.py
+	@echo "Interactive Brokers visualization CLI is ready: ./ib_visualize"
 
 ib_build: $(IB_CPP_TARGET)
 
@@ -61,6 +65,10 @@ $(IB_HISTORICAL_STORE_TARGET): $(IB_HISTORICAL_STORE_SOURCES)
 check_ib_python:
 	@$(IB_PYTHON) -c "import ibapi" >/dev/null 2>&1 || \
 		(echo "Install Python package 'ibapi' for $(IB_PYTHON) before running make ib_gateway." >&2; exit 1)
+
+check_plotly:
+	@$(IB_PYTHON) -c "import plotly" >/dev/null 2>&1 || \
+		(echo "Install Python package 'plotly' for $(IB_PYTHON) before running make ib_visualize." >&2; exit 1)
 
 check_ib_api:
 	@test -f "$(IB_API_CLIENT_DIR)/EClientSocket.h" || \

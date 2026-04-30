@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Any
 
 
+_SQLITE_BUSY_TIMEOUT_MS = 5000
+
+
 def _optional_float(value: Any) -> float | None:
     if value in {None, ""}:
         return None
@@ -31,11 +34,18 @@ def _text(value: Any) -> str:
     return str(value)
 
 
+def _configure_connection(connection: sqlite3.Connection) -> None:
+    connection.execute(f"PRAGMA busy_timeout = {_SQLITE_BUSY_TIMEOUT_MS}")
+    connection.execute("PRAGMA journal_mode = WAL")
+    connection.execute("PRAGMA synchronous = NORMAL")
+
+
 class SQLiteEventStore:
     def __init__(self, database_path: str) -> None:
         path = Path(database_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(path, check_same_thread=False)
+        self._connection = sqlite3.connect(path, timeout=_SQLITE_BUSY_TIMEOUT_MS / 1000, check_same_thread=False)
+        _configure_connection(self._connection)
         self._connection.row_factory = sqlite3.Row
         self._lock = threading.Lock()
         self._market_data_requests: dict[int, dict[str, Any]] = {}
