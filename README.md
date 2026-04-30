@@ -1,12 +1,13 @@
 # Monte_Carlo_Methods
 
-Monte Carlo experimentation in C++, now with a Python Interactive Brokers gateway for connectivity and a native C++ event processor for downstream market-data and historical-data handling.
+Monte Carlo experimentation in C++, now with a Python Interactive Brokers gateway for connectivity, a native C++ event processor for downstream market-data and historical-data handling, and a browser dashboard prototype for cached market views.
 
 ## What is in the repo
 
 - `ib_gateway`: the primary Interactive Brokers CLI entrypoint. It connects to TWS or IB Gateway and emits JSONL events to stdout and an optional log file.
 - `ib_event_processor`: the supported native C++ processing stage. It consumes the gateway JSONL stream and emits normalized quote and bar events for heavier downstream processing.
 - `ib_historical_store`: a native C++ persistence stage that calls `./ib_gateway`, fetches contract metadata and historical bars, and stores them in SQLite.
+- `dashboard/live_ticker.html`: a browser dashboard prototype that reads cached bars from a local `/api/bars` endpoint and can overlay live ticks from the gateway WebSocket bridge.
 - `experimental/native_ib_cpp`: the deprecated native C++ IBKR wrapper kept for reference, but not the recommended path on modern Linux because of upstream protobuf compatibility issues in the deprecated C++ SDK.
 - `experimental/one_factor_sde`: scaffold-level SDE code kept out of the supported build path.
 - `experimental/random_num_generator`: older random-number generator code retained as reference material instead of a default build target.
@@ -64,8 +65,10 @@ make ib_processor
 Build the SQLite historical storage runner:
 
 ```bash
-make ib_historical_store
+make historical_store
 ```
+
+This target produces `./ib_historical_store` and needs SQLite plus the single-header `nlohmann/json.hpp` dependency available to the compiler.
 
 ## Experimental native C++ target
 
@@ -99,11 +102,22 @@ This avoids the deprecated IBKR C++ SDK while keeping the performance-sensitive 
 - `ib_gateway.py`, `ib_gateway`, and `ib_gateway_app/`: supported Python gateway and WebSocket bridge.
 - `src/InteractiveBrokers/IBEventProcessor.cpp` and `src/InteractiveBrokers/ib_event_processor_main.cpp`: supported C++ JSONL processor.
 - `src/InteractiveBrokers/IBHistoricalStore.cpp` and `src/InteractiveBrokers/ib_historical_store_main.cpp`: supported C++ SQLite historical-store runner.
+- `dashboard/live_ticker.html`: browser dashboard prototype for SQLite-backed bar views plus optional live tick overlay.
 - `experimental/native_ib_cpp/`: deprecated C++ SDK path retained for reference.
 - `experimental/one_factor_sde/` and `experimental/random_num_generator/`: non-default Monte Carlo scaffolding and older demos.
 - `examples/`: standalone examples that are not part of the default build.
 
 Generated artifacts such as `.pyc`, SQLite databases, JSONL logs, and compiled binaries are intentionally ignored and should stay untracked.
+
+## Dashboard prototype
+
+The repo now includes `dashboard/live_ticker.html`, a chart-first browser UI for viewing cached price history.
+
+- It reads bar history from a same-origin `/api/bars` endpoint backed by the SQLite cache.
+- It can optionally overlay live bid/ask/last ticks from the local gateway WebSocket bridge, defaulting to `ws://127.0.0.1:8765`.
+- The controls in the page adjust the browser polling loop and cache query parameters; they do not create extra IB sessions by themselves.
+
+This file is a front-end prototype only. The repo does not currently ship a matching HTTP server for `/api/bars`, so serve it alongside your own local cache API if you want the chart to populate from SQLite.
 
 ## Gateway usage
 
