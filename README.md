@@ -351,9 +351,30 @@ Current dashboard behavior and UI:
 - When a selected symbol, duration, or bar-size combination is missing from SQLite, the dashboard can issue one short historical request, populate SQLite, and then return to the normal DB-only path.
 - Cache and bootstrap failures now surface in the page status banner instead of silently clearing the chart.
 - The chart is window-responsive and renders volume below price in a dedicated subplot.
+- When cached option greeks are available, the dashboard renders a third subplot for implied terminal ITM probability by strike and polls `/api/options-probability` from the same local server.
+- The options panel now includes an expiry selector so you can switch between the nearest weekly and monthly cached probability curves.
 - Watch settings are dropdown-based and auto-refresh the chart when changed.
 - Timeframe choices now include `5 sec`, `1 min`, `5 min`, `15 min`, `30 min`, `Hourly`, `4 hour`, `Daily`, and `Weekly`.
 - Duration choices auto-adjust to the selected bar size so the fetched historical amount matches the timeframe more naturally. Validated defaults include `1 min -> 14400 S`, `5 mins -> 1 D`, `1 hour -> 30 D`, `1 day -> 1 Y`, and `1 week -> 1 Y`.
+
+Populate a small ETF option strip around spot and cache option greeks into SQLite:
+
+```bash
+./ib_gateway option-greeks-strip \
+	--db data/ib_market_data.db \
+	--host 172.23.80.1 \
+	--port 7497 \
+	--client-id 12 \
+	--symbol SPY \
+	--exchange SMART \
+	--currency USD \
+	--expiry-mode both \
+	--strikes-around 2 \
+	--market-data-type 3 \
+	--runtime-seconds 15
+```
+
+This collector now resolves a spot price from SQLite or a one-shot historical bootstrap, qualifies each selected option contract through `contract-details`, and then subscribes to option market data with real `conId` and `localSymbol` values. In the validated SPY delayed-data flow, that populates `option_greeks` rows that the dashboard can serve immediately through `/api/options-probability`. If IBKR withholds model-computation ticks for a contract, the collector also has a fallback path that can backfill implied volatility from delayed option prices.
 
 ### Operational Notes
 
