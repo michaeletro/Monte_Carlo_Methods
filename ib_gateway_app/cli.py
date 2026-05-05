@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import math
+import sqlite3
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from .contracts import build_contract
@@ -258,6 +260,629 @@ def _run_historical_collector(gateway: IBGateway, args: argparse.Namespace, trac
             return 1
 
 
+def _connect_db(database_path: str) -> sqlite3.Connection:
+    connection = sqlite3.connect(database_path)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def _underlying_contract_args(args: argparse.Namespace) -> argparse.Namespace:
+    return argparse.Namespace(
+        symbol=args.symbol,
+        sec_type=args.sec_type,
+        exchange=args.exchange,
+        primary_exchange=args.primary_exchange,
+        currency=args.currency,
+        expiry="",
+        strike=None,
+        right="",
+        multiplier="",
+        local_symbol="",
+        trading_class="",
+        con_id=args.con_id,
+    )
+
+
+def _option_contract_args(
+    args: argparse.Namespace,
+    *,
+    expiry: str,
+    strike: float,
+    right: str,
+    multiplier: str,
+    trading_class: str,
+) -> argparse.Namespace:
+    return argparse.Namespace(
+        symbol=args.symbol,
+        sec_type="OPT",
+        exchange=args.exchange,
+        primary_exchange=args.primary_exchange,
+        currency=args.currency,
+        expiry=expiry,
+        strike=strike,
+        right=right,
+        multiplier=multiplier,
+        local_symbol="",
+        trading_class=trading_class,
+        con_id=None,
+    )
+
+
+def _parse_option_expiry(value: str) -> datetime | None:
+    digits = "".join(character for character in str(value).strip() if character.isdigit())
+    if len(digits) < 8:
+        return None
+    try:
+        return datetime.strptime(digits[:8], "%Y%m%d")
+    except ValueError:
+        return None
+
+
+def _is_monthly_expiry(expiry: datetime) -> bool:
+    return expiry.weekday() == 4 and 15 <= expiry.day <= 21
+
+
+def _load_underlying_con_id(database_path: str, args: argparse.Namespace) -> int | None:
+    with _connect_db(database_path) as connection:
+        row = connection.execute(
+            """
+            SELECT con_id
+            FROM instruments
+            WHERE symbol = ? AND sec_type = ? AND exchange = ? AND currency = ? AND con_id IS NOT NULL
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+            """,
+            (args.symbol.upper(), args.sec_type.upper(), args.exchange.upper(), args.currency.upper()),
+        ).fetchone()
+    if row is None or row["con_id"] is None:
+        return None
+    return int(row["con_id"])
+
+
+def _load_option_chain_snapshot(database_path: str, request_id: int) -> dict[str, Any]:
+    with _connect_db(database_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT exchange, trading_class, multiplier, expirations_json, strikes_json
+            FROM option_chain_snapshots
+            WHERE req_id = ?
+            ORDER BY id DESC
+            """,
+            (request_id,),
+        ).fetchall()
+
+    if not rows:
+        raise ValueError("no option-chain snapshot was persisted for the request")
+
+    expiries: set[str] = set()
+    strikes: set[float] = set()
+    preferred_row = next((row for row in rows if str(row["exchange"]).upper() == "SMART"), rows[0])
+    for row in rows:
+        expiries.update(str(expiry).strip() for expiry in json.loads(str(row["expirations_json"] or "[]")) if str(expiry).strip())
+        strikes.update(float(strike) for strike in json.loads(str(row["strikes_json"] or "[]")))
+
+    if not expiries or not strikes:
+        raise ValueError("option-chain snapshot did not include expiries and strikes")
+
+    return {
+        "expiries": sorted(expiries),
+        "strikes": sorted(strikes),
+        "multiplier": str(preferred_row["multiplier"] or "100"),
+        "trading_class": str(preferred_row["trading_class"] or ""),
+    }
+
+
+def _load_qualified_option_contract(
+    database_path: str,
+    args: argparse.Namespace,
+    *,
+    expiry: str,
+    strike: float,
+    right: str,
+    multiplier: str,
+    trading_class: str,
+) -> argparse.Namespace | None:
+    with _connect_db(database_path) as connection:
+        row = connection.execute(
+            """
+            SELECT exchange, primary_exchange, currency, multiplier, local_symbol, trading_class, con_id
+            FROM instruments
+            WHERE symbol = ? AND sec_type = 'OPT' AND exchange = ? AND currency = ?
+              AND expiry = ? AND strike = ? AND right_code = ? AND multiplier = ? AND trading_class = ?
+              AND con_id IS NOT NULL
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+            """,
+            (
+                args.symbol.upper(),
+                args.exchange.upper(),
+                args.currency.upper(),
+                expiry,
+                strike,
+                right,
+                multiplier,
+                trading_class,
+            ),
+        ).fetchone()
+
+    if row is None or row["con_id"] is None:
+        return None
+
+    return argparse.Namespace(
+        symbol=args.symbol,
+        sec_type="OPT",
+        exchange=str(row["exchange"] or args.exchange),
+        primary_exchange=str(row["primary_exchange"] or args.primary_exchange),
+        currency=str(row["currency"] or args.currency),
+        expiry=expiry,
+        strike=strike,
+        right=right,
+        multiplier=str(row["multiplier"] or multiplier),
+        local_symbol=str(row["local_symbol"] or ""),
+        trading_class=str(row["trading_class"] or trading_class),
+        con_id=int(row["con_id"]),
+    )
+
+
+def _qualify_option_contract(
+    gateway: IBGateway,
+    database_path: str,
+    args: argparse.Namespace,
+    *,
+    expiry: str,
+    strike: float,
+    right: str,
+    multiplier: str,
+    trading_class: str,
+) -> argparse.Namespace:
+    option_args = _option_contract_args(
+        args,
+        expiry=expiry,
+        strike=strike,
+        right=right,
+        multiplier=multiplier,
+        trading_class=trading_class,
+    )
+    request_id = gateway.request_contract_details(build_contract(option_args))
+    if gateway.wait_for_contract_details(request_id, args.ready_timeout):
+        qualified_option = _load_qualified_option_contract(
+            database_path,
+            args,
+            expiry=expiry,
+            strike=strike,
+            right=right,
+            multiplier=multiplier,
+            trading_class=trading_class,
+        )
+        if qualified_option is not None:
+            return qualified_option
+    return option_args
+
+
+def _select_option_expiries(expiries: list[str], expiry_mode: str) -> list[str]:
+    parsed_expiries = [(expiry, _parse_option_expiry(expiry)) for expiry in expiries]
+    future_expiries = [
+        (expiry, expiry_time)
+        for expiry, expiry_time in parsed_expiries
+        if expiry_time is not None and expiry_time + timedelta(days=1) >= datetime.now()
+    ]
+    future_expiries.sort(key=lambda item: item[1])
+    if not future_expiries:
+        raise ValueError("no future option expiries were available in the option chain")
+
+    weekly_expiry = future_expiries[0][0]
+    monthly_expiry = next((expiry for expiry, expiry_time in future_expiries if _is_monthly_expiry(expiry_time)), weekly_expiry)
+
+    if expiry_mode == "weekly":
+        return [weekly_expiry]
+    if expiry_mode == "monthly":
+        return [monthly_expiry]
+
+    selected: list[str] = []
+    for expiry in (weekly_expiry, monthly_expiry):
+        if expiry not in selected:
+            selected.append(expiry)
+    return selected
+
+
+def _select_strike_strip(strikes: list[float], spot_price: float, strikes_around: int) -> list[float]:
+    if not strikes:
+        raise ValueError("no strikes were available in the option chain")
+
+    ordered = sorted(float(strike) for strike in strikes)
+    nearest_index = min(range(len(ordered)), key=lambda index: abs(ordered[index] - spot_price))
+    lower_index = max(0, nearest_index - max(strikes_around, 0))
+    upper_index = min(len(ordered), nearest_index + max(strikes_around, 0) + 1)
+    return ordered[lower_index:upper_index]
+
+
+def _load_spot_from_ticks(database_path: str, args: argparse.Namespace) -> float | None:
+    with _connect_db(database_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT m.field, m.price
+            FROM market_data_ticks m
+            JOIN instruments i ON i.id = m.instrument_id
+            WHERE i.symbol = ? AND i.sec_type = ? AND i.exchange = ? AND i.currency = ?
+              AND m.event_type = 'marketData.tickPrice' AND m.price IS NOT NULL
+            ORDER BY m.created_at DESC, m.id DESC
+            LIMIT 50
+            """,
+            (args.symbol.upper(), args.sec_type.upper(), args.exchange.upper(), args.currency.upper()),
+        ).fetchall()
+
+    latest_by_field: dict[str, float] = {}
+    for row in rows:
+        field = str(row["field"] or "").upper().replace(" ", "_")
+        if field in latest_by_field:
+            continue
+        latest_by_field[field] = float(row["price"])
+
+    for field in ("LAST", "DELAYED_LAST", "CLOSE", "DELAYED_CLOSE"):
+        if field in latest_by_field:
+            return latest_by_field[field]
+
+    bid = latest_by_field.get("BID") or latest_by_field.get("DELAYED_BID")
+    ask = latest_by_field.get("ASK") or latest_by_field.get("DELAYED_ASK")
+    if bid is not None and ask is not None:
+        return (bid + ask) / 2.0
+    return None
+
+
+def _standard_normal_cdf(value: float) -> float:
+    return 0.5 * (1.0 + math.erf(value / math.sqrt(2.0)))
+
+
+def _load_spot_from_history(database_path: str, args: argparse.Namespace) -> float | None:
+    with _connect_db(database_path) as connection:
+        row = connection.execute(
+            """
+            SELECT hp.close
+            FROM historical_prices hp
+            JOIN instruments i ON i.id = hp.instrument_id
+            WHERE i.symbol = ? AND i.sec_type = ? AND i.exchange = ? AND i.currency = ?
+            ORDER BY hp.bar_time DESC, hp.id DESC
+            LIMIT 1
+            """,
+            (args.symbol.upper(), args.sec_type.upper(), args.exchange.upper(), args.currency.upper()),
+        ).fetchone()
+    if row is None or row["close"] is None:
+        return None
+    return float(row["close"])
+
+
+def _time_to_expiry_years(expiry: str) -> float | None:
+    expiry_time = _parse_option_expiry(expiry)
+    if expiry_time is None:
+        return None
+    expiry_close = expiry_time + timedelta(days=1)
+    return max((expiry_close - datetime.utcnow()).total_seconds(), 0.0) / (365.0 * 24.0 * 60.0 * 60.0)
+
+
+def _black_scholes_price(*, spot_price: float, strike: float, time_to_expiry_years: float, implied_vol: float, right_code: str) -> float:
+    if time_to_expiry_years <= 0 or implied_vol <= 0:
+        intrinsic_value = max(spot_price - strike, 0.0)
+        if right_code.upper() == "P":
+            intrinsic_value = max(strike - spot_price, 0.0)
+        return intrinsic_value
+
+    sigma_sqrt_t = implied_vol * math.sqrt(time_to_expiry_years)
+    d1 = (math.log(spot_price / strike) + 0.5 * (implied_vol**2) * time_to_expiry_years) / sigma_sqrt_t
+    d2 = d1 - sigma_sqrt_t
+    if right_code.upper() == "P":
+        return strike * _standard_normal_cdf(-d2) - spot_price * _standard_normal_cdf(-d1)
+    return spot_price * _standard_normal_cdf(d1) - strike * _standard_normal_cdf(d2)
+
+
+def _solve_implied_volatility(*, spot_price: float, strike: float, expiry: str, right_code: str, option_price: float) -> float | None:
+    if spot_price <= 0 or strike <= 0 or option_price <= 0:
+        return None
+
+    time_to_expiry_years = _time_to_expiry_years(expiry)
+    if time_to_expiry_years is None:
+        return None
+    if time_to_expiry_years <= 0:
+        return None
+
+    intrinsic_value = max(spot_price - strike, 0.0)
+    if right_code.upper() == "P":
+        intrinsic_value = max(strike - spot_price, 0.0)
+    if option_price < intrinsic_value - 1e-6:
+        return None
+
+    lower_bound = 1e-4
+    upper_bound = 5.0
+    lower_price = _black_scholes_price(
+        spot_price=spot_price,
+        strike=strike,
+        time_to_expiry_years=time_to_expiry_years,
+        implied_vol=lower_bound,
+        right_code=right_code,
+    )
+    upper_price = _black_scholes_price(
+        spot_price=spot_price,
+        strike=strike,
+        time_to_expiry_years=time_to_expiry_years,
+        implied_vol=upper_bound,
+        right_code=right_code,
+    )
+    if option_price < lower_price - 1e-6 or option_price > upper_price + 1e-6:
+        return None
+
+    for _ in range(80):
+        midpoint = (lower_bound + upper_bound) / 2.0
+        midpoint_price = _black_scholes_price(
+            spot_price=spot_price,
+            strike=strike,
+            time_to_expiry_years=time_to_expiry_years,
+            implied_vol=midpoint,
+            right_code=right_code,
+        )
+        if abs(midpoint_price - option_price) <= 1e-6:
+            return midpoint
+        if midpoint_price < option_price:
+            lower_bound = midpoint
+        else:
+            upper_bound = midpoint
+    return (lower_bound + upper_bound) / 2.0
+
+
+def _load_latest_option_quote(database_path: str, request_id: int) -> dict[str, Any] | None:
+    with _connect_db(database_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT m.instrument_id, m.field, m.price, i.expiry, i.strike, i.right_code
+            FROM market_data_ticks m
+            JOIN instruments i ON i.id = m.instrument_id
+            WHERE m.req_id = ? AND m.event_type = 'marketData.tickPrice' AND m.price IS NOT NULL
+            ORDER BY m.id DESC
+            LIMIT 50
+            """,
+            (request_id,),
+        ).fetchall()
+
+    if not rows:
+        return None
+
+    latest_by_field: dict[str, float] = {}
+    reference_row: sqlite3.Row | None = None
+    for row in rows:
+        if reference_row is None and row["instrument_id"] is not None:
+            reference_row = row
+        field = str(row["field"] or "").upper().replace(" ", "_")
+        if field in latest_by_field:
+            continue
+        latest_by_field[field] = float(row["price"])
+
+    if reference_row is None:
+        return None
+
+    option_price = None
+    for field in ("LAST", "DELAYED_LAST", "CLOSE", "DELAYED_CLOSE"):
+        candidate = latest_by_field.get(field)
+        if candidate is not None and candidate > 0:
+            option_price = candidate
+            break
+
+    if option_price is None:
+        bid = latest_by_field.get("BID") or latest_by_field.get("DELAYED_BID")
+        ask = latest_by_field.get("ASK") or latest_by_field.get("DELAYED_ASK")
+        if bid is not None and ask is not None and bid > 0 and ask > 0:
+            option_price = (bid + ask) / 2.0
+
+    if option_price is None:
+        return None
+
+    return {
+        "instrument_id": int(reference_row["instrument_id"]),
+        "expiry": str(reference_row["expiry"] or ""),
+        "strike": float(reference_row["strike"]),
+        "right_code": str(reference_row["right_code"] or ""),
+        "option_price": float(option_price),
+    }
+
+
+def _option_greeks_exist_for_request(database_path: str, request_id: int) -> bool:
+    with _connect_db(database_path) as connection:
+        row = connection.execute(
+            "SELECT 1 FROM option_greeks WHERE req_id = ? LIMIT 1",
+            (request_id,),
+        ).fetchone()
+    return row is not None
+
+
+def _insert_synthetic_option_greek(
+    database_path: str,
+    *,
+    instrument_id: int,
+    request_id: int,
+    implied_vol: float,
+    option_price: float,
+    underlying_price: float,
+) -> None:
+    with _connect_db(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO option_greeks (
+                instrument_id, req_id, field, implied_vol, delta, option_price, present_value_dividend, gamma, vega, theta, underlying_price
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                instrument_id,
+                request_id,
+                "SYNTHETIC_IV",
+                implied_vol,
+                None,
+                option_price,
+                None,
+                None,
+                None,
+                None,
+                underlying_price,
+            ),
+        )
+        connection.commit()
+
+
+def _backfill_option_greeks_from_ticks(database_path: str, request_ids: list[int], spot_price: float) -> int:
+    inserted_rows = 0
+    for request_id in request_ids:
+        if _option_greeks_exist_for_request(database_path, request_id):
+            continue
+
+        quote_row = _load_latest_option_quote(database_path, request_id)
+        if quote_row is None:
+            continue
+
+        implied_vol = _solve_implied_volatility(
+            spot_price=spot_price,
+            strike=float(quote_row["strike"]),
+            expiry=str(quote_row["expiry"]),
+            right_code=str(quote_row["right_code"]),
+            option_price=float(quote_row["option_price"]),
+        )
+        if implied_vol is None:
+            continue
+
+        _insert_synthetic_option_greek(
+            database_path,
+            instrument_id=int(quote_row["instrument_id"]),
+            request_id=request_id,
+            implied_vol=implied_vol,
+            option_price=float(quote_row["option_price"]),
+            underlying_price=spot_price,
+        )
+        inserted_rows += 1
+    return inserted_rows
+
+
+def _bootstrap_spot_from_history(gateway: IBGateway, database_path: str, args: argparse.Namespace) -> float | None:
+    what_to_show = "MIDPOINT" if args.sec_type.upper() in {"CASH", "IND"} else "TRADES"
+    request_id = gateway.request_historical_data(
+        build_contract(_underlying_contract_args(args)),
+        "",
+        "2 D",
+        "1 min",
+        what_to_show,
+        0,
+        1,
+        False,
+    )
+    if not gateway.wait_for_historical(request_id, args.ready_timeout):
+        gateway.cancel_historical_request(request_id)
+        return None
+    return _load_spot_from_history(database_path, args)
+
+
+def _resolve_spot_price(gateway: IBGateway, database_path: str, args: argparse.Namespace) -> float:
+    spot_price = _load_spot_from_ticks(database_path, args)
+    if spot_price is None:
+        spot_price = _load_spot_from_history(database_path, args)
+    if spot_price is None:
+        spot_price = _bootstrap_spot_from_history(gateway, database_path, args)
+    if spot_price is None:
+        underlying_contract = build_contract(_underlying_contract_args(args))
+        request_id = gateway.request_market_data(
+            underlying_contract,
+            "233",
+            False,
+            False,
+            args.market_data_type,
+        )
+        try:
+            gateway.sleep_while_connected(args.spot_runtime_seconds)
+        finally:
+            gateway.cancel_market_data_request(request_id)
+
+        spot_price = _load_spot_from_ticks(database_path, args)
+    if spot_price is None:
+        raise ValueError(f"could not resolve a spot price for {args.symbol} from market data or historical cache")
+    return spot_price
+
+
+def _run_option_greeks_strip_collector(gateway: IBGateway, args: argparse.Namespace) -> int:
+    if not args.db:
+        raise ValueError("--db is required for option-greeks-strip")
+    if args.runtime_seconds <= 0:
+        raise ValueError("--runtime-seconds must be greater than zero for option-greeks-strip")
+    if args.spot_runtime_seconds <= 0:
+        raise ValueError("--spot-runtime-seconds must be greater than zero")
+
+    underlying_args = _underlying_contract_args(args)
+    underlying_con_id = args.con_id
+    if underlying_con_id is None:
+        contract_details_request_id = gateway.request_contract_details(build_contract(underlying_args))
+        if not gateway.wait_for_contract_details(contract_details_request_id, args.ready_timeout):
+            return 1
+        underlying_con_id = _load_underlying_con_id(args.db, args)
+    if underlying_con_id is None:
+        raise ValueError(f"could not resolve an underlying conId for {args.symbol}")
+
+    option_chain_request_id = gateway.request_option_chain(
+        args.symbol.upper(),
+        args.sec_type.upper(),
+        underlying_con_id,
+        args.fut_fop_exchange,
+    )
+    if not gateway.wait_for_option_chain(option_chain_request_id, args.ready_timeout):
+        return 1
+
+    chain_snapshot = _load_option_chain_snapshot(args.db, option_chain_request_id)
+    spot_price = _resolve_spot_price(gateway, args.db, args)
+    selected_expiries = _select_option_expiries(chain_snapshot["expiries"], args.expiry_mode)
+    selected_strikes = _select_strike_strip(chain_snapshot["strikes"], spot_price, args.strikes_around)
+
+    request_ids: list[int] = []
+    try:
+        for expiry in selected_expiries:
+            for strike in selected_strikes:
+                for right in ("C", "P"):
+                    option_args = _qualify_option_contract(
+                        gateway,
+                        args.db,
+                        args,
+                        expiry=expiry,
+                        strike=strike,
+                        right=right,
+                        multiplier=chain_snapshot["multiplier"],
+                        trading_class=chain_snapshot["trading_class"],
+                    )
+                    request_ids.append(
+                        gateway.request_market_data(
+                            build_contract(option_args),
+                            args.generic_ticks,
+                            False,
+                            False,
+                            args.market_data_type,
+                        )
+                    )
+
+        print(
+            f"collecting option greeks for {args.symbol.upper()} around spot {spot_price:.2f} across expiries {', '.join(selected_expiries)} and {len(selected_strikes)} strikes ({len(request_ids)} option contracts)",
+            flush=True,
+        )
+        gateway.sleep_while_connected(args.runtime_seconds)
+    finally:
+        for request_id in request_ids:
+            try:
+                gateway.cancel_market_data_request(request_id)
+            except Exception:
+                pass
+
+    synthetic_greeks = _backfill_option_greeks_from_ticks(args.db, request_ids, spot_price)
+    if synthetic_greeks > 0:
+        print(
+            f"backfilled {synthetic_greeks} option greek rows from delayed option prices for {args.symbol.upper()}",
+            flush=True,
+        )
+
+    print(
+        f"finished collecting option greeks for {args.symbol.upper()} into {args.db}",
+        flush=True,
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     connection_parent = argparse.ArgumentParser(add_help=False)
     connection_parent.add_argument("--host", default="127.0.0.1")
@@ -314,6 +939,15 @@ def build_parser() -> argparse.ArgumentParser:
     option_chain.add_argument("--underlying-con-id", type=int, required=True)
     option_chain.add_argument("--fut-fop-exchange", default="")
     option_chain.add_argument("--runtime-seconds", type=int, default=10)
+
+    option_greeks_strip = subparsers.add_parser("option-greeks-strip", parents=[connection_parent, contract_parent])
+    option_greeks_strip.add_argument("--market-data-type", type=parse_market_data_type, default=3)
+    option_greeks_strip.add_argument("--generic-ticks", default="106,100,101")
+    option_greeks_strip.add_argument("--fut-fop-exchange", default="")
+    option_greeks_strip.add_argument("--expiry-mode", choices=["weekly", "monthly", "both"], default="both")
+    option_greeks_strip.add_argument("--strikes-around", type=int, default=4)
+    option_greeks_strip.add_argument("--spot-runtime-seconds", type=int, default=4)
+    option_greeks_strip.add_argument("--runtime-seconds", type=int, default=20)
 
     account_summary = subparsers.add_parser("account-summary", parents=[connection_parent])
     account_summary.add_argument("--group-name", default="All")
@@ -407,6 +1041,9 @@ def run_command(args: argparse.Namespace) -> int:
                 args.fut_fop_exchange,
             )
             return 0 if gateway.wait_for_option_chain(request_id, args.runtime_seconds) else 1
+
+        if args.command == "option-greeks-strip":
+            return _run_option_greeks_strip_collector(gateway, args)
 
         if args.command == "account-summary":
             request_id = gateway.request_account_summary(args.group_name, args.tags)

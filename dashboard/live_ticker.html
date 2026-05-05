@@ -937,6 +937,14 @@
               </select>
             </label>
             <label>
+              Options Expiry Curve
+              <select id='options-expiry-mode'>
+                <option value='nearest' selected>Nearest</option>
+                <option value='weekly'>Weekly</option>
+                <option value='monthly'>Monthly</option>
+              </select>
+            </label>
+            <label>
               Browser Poll Seconds
               <select id='poll-seconds'>
                 <option value='1' selected>1</option>
@@ -1017,6 +1025,7 @@
       marketDataType: document.getElementById('market-data-type'),
       duration: document.getElementById('duration'),
       barSize: document.getElementById('bar-size'),
+      optionsExpiryMode: document.getElementById('options-expiry-mode'),
       useRth: document.getElementById('use-rth'),
       pollSeconds: document.getElementById('poll-seconds'),
       genericTicks: document.getElementById('generic-ticks'),
@@ -1053,6 +1062,10 @@
     let isStreaming = false;
     let cacheSeedCount = 0;
     let lastCacheMessage = '';
+    let optionsProbabilityPoints = [];
+    let optionsProbabilitySpotPrice = null;
+    let optionsProbabilityExpiry = '';
+    let lastOptionsProbabilityMessage = '';
     let watchSettingsTimer = null;
     let pendingWatchRefresh = false;
     const chartResizeState = {
@@ -1076,6 +1089,7 @@
       elements.currency,
       elements.duration,
       elements.barSize,
+      elements.optionsExpiryMode,
       elements.pollSeconds,
       elements.useRth,
     ];
@@ -1438,7 +1452,9 @@
         ? `Showing ${historyBars.length.toLocaleString()} cached ${elements.barSize.value.trim()} bars for ${contract.symbol}. Resize the browser and the chart pane stretches with the window.`
         : 'Start local polling and this page will surface cached bars in a full-window layout sized to the browser.';
       elements.chartCaption.textContent = historyBars.length
-        ? `Close-price and volume view across ${elements.duration.value.trim()} using the local SQLite cache only.`
+        ? optionsProbabilityPoints.length
+          ? `Close-price, volume, and implied option probability view across ${elements.duration.value.trim()} using the local SQLite cache only.`
+          : `Close-price and volume view across ${elements.duration.value.trim()} using the local SQLite cache only. Option probability appears when cached option greeks are available.`
         : 'The chart fills the remaining window height and keeps reading only from the SQLite-backed dashboard API.';
       updateMarketTag();
     }
@@ -1537,6 +1553,58 @@
       return cacheSeedCount;
     }
 
+    async function loadOptionsProbability(contract) {
+      const params = new URLSearchParams({
+        symbol: contract.symbol,
+        secType: contract.secType,
+        exchange: contract.exchange,
+        currency: contract.currency,
+        optionsExpiryMode: elements.optionsExpiryMode.value.trim(),
+        limit: '400',
+      });
+
+      const response = await fetch(`/api/options-probability?${params.toString()}`, { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error(`options probability request failed with HTTP ${response.status}`);
+      }
+
+      const payload = await response.json();
+      lastOptionsProbabilityMessage = payload && typeof payload.message === 'string' ? payload.message.trim() : '';
+      optionsProbabilityExpiry = payload && typeof payload.expiry === 'string' ? payload.expiry.trim() : '';
+      optionsProbabilitySpotPrice = Number.isFinite(Number(payload?.spotPrice)) ? Number(payload.spotPrice) : null;
+
+      const probabilityPoints = Array.isArray(payload.points) ? payload.points : [];
+      if (!probabilityPoints.length) {
+        optionsProbabilityPoints = [];
+        updateMetrics();
+        renderChart();
+        return 0;
+      }
+
+      optionsProbabilityPoints = probabilityPoints
+        .map((row) => ({
+          strike: Number(row.strike),
+          right: String(row.right || '').trim().toUpperCase(),
+          probability: Number(row.probability),
+          impliedVol: Number(row.impliedVol),
+          delta: row.delta === null || row.delta === undefined ? null : Number(row.delta),
+          optionPrice: row.optionPrice === null || row.optionPrice === undefined ? null : Number(row.optionPrice),
+          underlyingPrice: Number(row.underlyingPrice),
+          createdAt: String(row.createdAt || ''),
+        }))
+        .filter((row) => Number.isFinite(row.strike) && Number.isFinite(row.probability));
+
+      optionsProbabilityPoints.sort((left, right) => left.strike - right.strike || left.right.localeCompare(right.right));
+      if (!Number.isFinite(optionsProbabilitySpotPrice)) {
+        const firstSpot = optionsProbabilityPoints.find((row) => Number.isFinite(row.underlyingPrice));
+        optionsProbabilitySpotPrice = firstSpot ? firstSpot.underlyingPrice : null;
+      }
+
+      updateMetrics();
+      renderChart();
+      return optionsProbabilityPoints.length;
+    }
+
     function scheduleDatabaseRefresh() {
       if (!isStreaming) {
         return;
@@ -1579,6 +1647,10 @@
       clearHistoryPollTimer();
       cacheSeedCount = 0;
       historyBars = [];
+      optionsProbabilityPoints = [];
+      optionsProbabilitySpotPrice = null;
+      optionsProbabilityExpiry = '';
+      lastOptionsProbabilityMessage = '';
       tickSeries.LAST = [];
       tickSeries.BID = [];
       tickSeries.ASK = [];
@@ -1594,6 +1666,9 @@
       const closePrices = historyBars.map((row) => row.close);
       const lowPrices = historyBars.map((row) => row.low);
       const highPrices = historyBars.map((row) => row.high);
+      const callProbabilityPoints = optionsProbabilityPoints.filter((row) => row.right === 'C');
+      const putProbabilityPoints = optionsProbabilityPoints.filter((row) => row.right === 'P');
+      const showProbabilityLegend = callProbabilityPoints.length > 0 || putProbabilityPoints.length > 0;
       const volumeValues = historyBars.map((row) => row.volume || 0);
       const volumeColors = historyBars.map((row) => row.close >= row.open
         ? 'rgba(0, 200, 5, 0.45)'
@@ -1675,6 +1750,38 @@
         });
       }
 
+      if (callProbabilityPoints.length) {
+        data.push({
+          type: 'scatter',
+          mode: 'lines+markers',
+          xaxis: 'x3',
+          yaxis: 'y3',
+          x: callProbabilityPoints.map((row) => row.strike),
+          y: callProbabilityPoints.map((row) => row.probability * 100),
+          name: 'Call ITM %',
+          line: { color: '#1663ff', width: 2.2 },
+          marker: { size: 5, color: '#1663ff' },
+          customdata: callProbabilityPoints.map((row) => [row.impliedVol, row.delta, row.optionPrice]),
+          hovertemplate: 'Strike %{x:.2f}<br>Call ITM %{y:.1f}%<br>IV %{customdata[0]:.1%}<br>Delta %{customdata[1]:+.2f}<extra></extra>',
+        });
+      }
+
+      if (putProbabilityPoints.length) {
+        data.push({
+          type: 'scatter',
+          mode: 'lines+markers',
+          xaxis: 'x3',
+          yaxis: 'y3',
+          x: putProbabilityPoints.map((row) => row.strike),
+          y: putProbabilityPoints.map((row) => row.probability * 100),
+          name: 'Put ITM %',
+          line: { color: '#7c3aed', width: 2.2 },
+          marker: { size: 5, color: '#7c3aed' },
+          customdata: putProbabilityPoints.map((row) => [row.impliedVol, row.delta, row.optionPrice]),
+          hovertemplate: 'Strike %{x:.2f}<br>Put ITM %{y:.1f}%<br>IV %{customdata[0]:.1%}<br>Delta %{customdata[1]:+.2f}<extra></extra>',
+        });
+      }
+
       if (tickSeries.LAST.length > 0) {
         data.push({
           type: 'scatter',
@@ -1718,10 +1825,12 @@
       const layout = {
         paper_bgcolor: 'rgba(0, 0, 0, 0)',
         plot_bgcolor: 'rgba(0, 0, 0, 0)',
-        margin: { l: 18, r: 24, t: 8, b: 28 },
-        showlegend: hasTickOverlay(),
+        margin: { l: 18, r: 24, t: 8, b: 36 },
+        showlegend: hasTickOverlay() || showProbabilityLegend,
         dragmode: 'pan',
         bargap: 0.14,
+        shapes: [],
+        annotations: [],
         legend: {
           orientation: 'h',
           x: 0,
@@ -1743,7 +1852,7 @@
           showticklabels: false,
         },
         yaxis: {
-          domain: [0.30, 1],
+          domain: [0.48, 1],
           gridcolor: 'rgba(15, 23, 42, 0.06)',
           tickfont: { color: '#667085' },
           automargin: true,
@@ -1760,9 +1869,10 @@
           tickfont: { color: '#667085' },
           automargin: true,
           zeroline: false,
+          showticklabels: false,
         },
         yaxis2: {
-          domain: [0, 0.20],
+          domain: [0.24, 0.40],
           gridcolor: 'rgba(15, 23, 42, 0.04)',
           tickfont: { color: '#667085' },
           automargin: true,
@@ -1772,6 +1882,34 @@
           tickformat: '~s',
           title: {
             text: 'Vol',
+            font: { size: 11, color: '#667085' },
+          },
+        },
+        xaxis3: {
+          domain: [0, 1],
+          anchor: 'y3',
+          gridcolor: 'rgba(15, 23, 42, 0.04)',
+          linecolor: 'rgba(15, 23, 42, 0.08)',
+          tickfont: { color: '#667085' },
+          automargin: true,
+          zeroline: false,
+          title: {
+            text: optionsProbabilityExpiry ? `Option strike (${optionsProbabilityExpiry})` : 'Option strike',
+            font: { size: 11, color: '#667085' },
+          },
+        },
+        yaxis3: {
+          domain: [0, 0.14],
+          gridcolor: 'rgba(15, 23, 42, 0.04)',
+          tickfont: { color: '#667085' },
+          automargin: true,
+          zeroline: false,
+          side: 'right',
+          fixedrange: true,
+          range: [0, 100],
+          ticksuffix: '%',
+          title: {
+            text: 'ITM',
             font: { size: 11, color: '#667085' },
           },
         },
@@ -1788,6 +1926,46 @@
         },
         uirevision: `${elements.symbol.value.trim()}-${elements.barSize.value.trim()}`,
       };
+
+      if (Number.isFinite(optionsProbabilitySpotPrice)) {
+        layout.shapes.push({
+          type: 'line',
+          xref: 'x3',
+          yref: 'y3',
+          x0: optionsProbabilitySpotPrice,
+          x1: optionsProbabilitySpotPrice,
+          y0: 0,
+          y1: 100,
+          line: {
+            color: 'rgba(15, 23, 42, 0.45)',
+            width: 1.4,
+            dash: 'dash',
+          },
+        });
+        layout.annotations.push({
+          xref: 'x3',
+          yref: 'y3',
+          x: optionsProbabilitySpotPrice,
+          y: 100,
+          text: `Spot ${formatPrice(optionsProbabilitySpotPrice)}`,
+          showarrow: false,
+          xanchor: 'left',
+          yanchor: 'bottom',
+          font: { size: 11, color: '#667085' },
+          bgcolor: 'rgba(255, 255, 255, 0.82)',
+        });
+      } else {
+        layout.annotations.push({
+          xref: 'paper',
+          yref: 'paper',
+          x: 0.5,
+          y: 0.06,
+          text: lastOptionsProbabilityMessage || `No cached option greeks for ${elements.symbol.value.trim()}.`,
+          showarrow: false,
+          font: { size: 11, color: '#667085' },
+          bgcolor: 'rgba(255, 255, 255, 0.82)',
+        });
+      }
 
       Plotly.react(elements.chart, data, layout, {
         responsive: true,
@@ -1826,6 +2004,16 @@
       cacheRefreshInFlight = true;
       try {
         const rowCount = await loadCachedBars(contract);
+        try {
+          await loadOptionsProbability(contract);
+        } catch (optionsError) {
+          lastOptionsProbabilityMessage = optionsError instanceof Error ? optionsError.message : String(optionsError);
+          optionsProbabilityPoints = [];
+          optionsProbabilitySpotPrice = null;
+          optionsProbabilityExpiry = '';
+          updateMetrics();
+          renderChart();
+        }
         const lagText = describeHistoricalLag();
 
         if (!rowCount) {
@@ -1904,6 +2092,7 @@
         ['marketDataType', elements.marketDataType],
         ['duration', elements.duration],
         ['barSize', elements.barSize],
+        ['optionsExpiryMode', elements.optionsExpiryMode],
         ['useRTH', elements.useRth],
         ['pollSeconds', elements.pollSeconds],
         ['genericTicks', elements.genericTicks],

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sqlite3
 import sys
 import threading
 import webbrowser
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -495,9 +496,210 @@ def _dashboard_bar_query_args(query_params: dict[str, str]) -> argparse.Namespac
         duration=str(query_params.get("duration", "1800 S")).strip(),
         what_to_show=str(query_params.get("whatToShow", "TRADES")).strip().upper(),
         bar_size=str(query_params.get("barSize", "")).strip(),
+        options_expiry_mode=str(query_params.get("optionsExpiryMode", "nearest")).strip().lower(),
         use_rth=_optional_query_int(str(query_params.get("useRTH", "0"))) or 0,
         limit=max(_optional_query_int(str(query_params.get("limit", "300"))) or 300, 1),
     )
+
+
+def _parse_option_expiry(value: str) -> datetime | None:
+    digits = "".join(character for character in str(value).strip() if character.isdigit())
+    if len(digits) < 8:
+        return None
+    try:
+        return datetime.strptime(digits[:8], "%Y%m%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _is_monthly_expiry(expiry: datetime) -> bool:
+    return expiry.weekday() == 4 and 15 <= expiry.day <= 21
+
+
+def _standard_normal_cdf(value: float) -> float:
+    return 0.5 * (1.0 + math.erf(value / math.sqrt(2.0)))
+
+
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    midpoint = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[midpoint]
+    return (ordered[midpoint - 1] + ordered[midpoint]) / 2.0
+
+
+def _implied_terminal_probability(*, spot_price: float, strike: float, implied_vol: float, expiry: str, right_code: str) -> float | None:
+    if spot_price <= 0 or strike <= 0 or implied_vol <= 0:
+        return None
+
+    expiry_time = _parse_option_expiry(expiry)
+    if expiry_time is None:
+        return None
+
+    expiry_close = expiry_time + timedelta(days=1)
+    time_to_expiry_years = max((expiry_close - datetime.now(timezone.utc)).total_seconds(), 0.0) / (365.0 * 24.0 * 60.0 * 60.0)
+    if time_to_expiry_years <= 0:
+        if right_code.upper() == "P":
+            return 1.0 if spot_price <= strike else 0.0
+        return 1.0 if spot_price >= strike else 0.0
+
+    sigma_sqrt_t = implied_vol * math.sqrt(time_to_expiry_years)
+    if sigma_sqrt_t <= 0:
+        return None
+
+    d2 = (math.log(spot_price / strike) - 0.5 * (implied_vol**2) * time_to_expiry_years) / sigma_sqrt_t
+    call_probability = _standard_normal_cdf(d2)
+    if right_code.upper() == "P":
+        return max(0.0, min(1.0, 1.0 - call_probability))
+    return max(0.0, min(1.0, call_probability))
+
+
+def _select_probability_expiry(rows: list[sqlite3.Row], expiry_mode: str = "nearest") -> str:
+    expiries = sorted({str(row["expiry"]).strip() for row in rows if str(row["expiry"]).strip()})
+    if not expiries:
+        raise ValueError("no option expiry metadata matched the requested filters")
+
+    now = datetime.now(timezone.utc)
+    parsed_expiries = [(expiry, _parse_option_expiry(expiry)) for expiry in expiries]
+    future_expiries = [
+        (expiry, expiry_time)
+        for expiry, expiry_time in parsed_expiries
+        if expiry_time is not None and expiry_time + timedelta(days=1) >= now
+    ]
+    if future_expiries:
+        future_expiries.sort(key=lambda item: item[1])
+        weekly_expiry = future_expiries[0][0]
+        monthly_expiry = next((expiry for expiry, expiry_time in future_expiries if _is_monthly_expiry(expiry_time)), weekly_expiry)
+        if expiry_mode == "weekly":
+            return weekly_expiry
+        if expiry_mode == "monthly":
+            return monthly_expiry
+        return future_expiries[0][0]
+
+    dated_expiries = [(expiry, expiry_time) for expiry, expiry_time in parsed_expiries if expiry_time is not None]
+    if dated_expiries:
+        dated_expiries.sort(key=lambda item: item[1])
+        return dated_expiries[-1][0]
+
+    return expiries[0]
+
+
+def _fetch_options_probability_payload(connection: sqlite3.Connection, args: argparse.Namespace) -> dict[str, Any]:
+    query = [
+        "i.symbol = ?",
+        "i.sec_type = 'OPT'",
+        "i.exchange = ?",
+        "i.currency = ?",
+    ]
+    params: list[Any] = [args.symbol.upper(), args.exchange.upper(), args.currency.upper()]
+    if args.expiry:
+        query.append("i.expiry = ?")
+        params.append(args.expiry)
+
+    rows = connection.execute(
+        f"""
+        WITH latest_option_greeks AS (
+            SELECT
+                og.id,
+                og.instrument_id,
+                og.implied_vol,
+                og.delta,
+                og.option_price,
+                og.gamma,
+                og.vega,
+                og.theta,
+                og.underlying_price,
+                og.created_at,
+                i.symbol,
+                i.expiry,
+                i.strike,
+                i.right_code,
+                ROW_NUMBER() OVER (
+                    PARTITION BY og.instrument_id
+                    ORDER BY
+                        CASE WHEN og.implied_vol IS NOT NULL AND og.option_price IS NOT NULL THEN 0 ELSE 1 END,
+                        CASE WHEN og.underlying_price IS NOT NULL THEN 0 ELSE 1 END,
+                        og.created_at DESC,
+                        og.id DESC
+                ) AS row_number
+            FROM option_greeks og
+            JOIN instruments i ON i.id = og.instrument_id
+            WHERE {' AND '.join(query)}
+        )
+        SELECT *
+        FROM latest_option_greeks
+        WHERE row_number = 1
+        ORDER BY created_at DESC, strike ASC
+        LIMIT ?
+        """,
+        [*params, max(min(args.limit, 1000), 1)],
+    ).fetchall()
+
+    if not rows:
+        raise ValueError(f"no cached option greeks matched {args.symbol}; populate SQLite with option market-data requests first")
+
+    selected_expiry = args.expiry or _select_probability_expiry(rows, getattr(args, "options_expiry_mode", "nearest"))
+    selected_rows = [row for row in rows if str(row["expiry"]).strip() == selected_expiry]
+    if not selected_rows:
+        raise ValueError(f"no cached option greeks matched {args.symbol} expiry {selected_expiry}")
+
+    spot_candidates = [float(row["underlying_price"]) for row in selected_rows if row["underlying_price"] is not None and float(row["underlying_price"]) > 0]
+    spot_price = _median(spot_candidates)
+
+    points: list[dict[str, Any]] = []
+    for row in selected_rows:
+        strike_value = row["strike"]
+        implied_vol = row["implied_vol"]
+        if strike_value is None or implied_vol is None:
+            continue
+
+        strike = float(strike_value)
+        underlying_price = row["underlying_price"]
+        if underlying_price is not None and float(underlying_price) > 0:
+            spot = float(underlying_price)
+        elif spot_price is not None and spot_price > 0:
+            spot = float(spot_price)
+        else:
+            continue
+
+        probability = _implied_terminal_probability(
+            spot_price=spot,
+            strike=strike,
+            implied_vol=float(implied_vol),
+            expiry=selected_expiry,
+            right_code=str(row["right_code"]),
+        )
+        if probability is None:
+            continue
+
+        points.append(
+            {
+                "strike": strike,
+                "right": str(row["right_code"]),
+                "probability": probability,
+                "impliedVol": float(implied_vol),
+                "delta": float(row["delta"]) if row["delta"] is not None else None,
+                "optionPrice": float(row["option_price"]) if row["option_price"] is not None else None,
+                "underlyingPrice": spot,
+                "createdAt": str(row["created_at"]),
+            }
+        )
+
+    if not points:
+        raise ValueError(f"no implied probability points could be computed for {args.symbol} expiry {selected_expiry}")
+
+    latest_created_at = max((point["createdAt"] for point in points), default="")
+    return {
+        "cached": True,
+        "symbol": args.symbol.upper(),
+        "expiryMode": getattr(args, "options_expiry_mode", "nearest"),
+        "expiry": selected_expiry,
+        "spotPrice": spot_price,
+        "updatedAt": latest_created_at,
+        "points": sorted(points, key=lambda point: (point["right"], point["strike"])),
+    }
 
 
 class _HistoricalBootstrapWatcher:
@@ -623,6 +825,9 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/bars":
             self._handle_bars_api(parsed.query)
             return
+        if parsed.path == "/api/options-probability":
+            self._handle_options_probability_api(parsed.query)
+            return
         super().do_GET()
 
     def _handle_bars_api(self, query_string: str) -> None:
@@ -676,6 +881,32 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 ],
             },
         )
+
+    def _handle_options_probability_api(self, query_string: str) -> None:
+        query_params = {key: values[-1] for key, values in parse_qs(query_string).items() if values}
+        if not str(query_params.get("symbol", "")).strip():
+            self._write_json(400, {"error": "symbol is required"})
+            return
+
+        database_path = Path(self._database_path)
+        if not database_path.exists():
+            self._write_json(200, {"cached": False, "points": [], "message": f"database not found: {database_path}"})
+            return
+
+        args = _dashboard_bar_query_args(query_params)
+        try:
+            with _connect(str(database_path)) as connection:
+                payload = _fetch_options_probability_payload(connection, args)
+        except ValueError as error:
+            self._write_json(200, {"cached": True, "points": [], "message": str(error)})
+            return
+        except sqlite3.OperationalError as error:
+            if "database is locked" in str(error).lower():
+                self._write_json(503, {"cached": False, "points": [], "message": "database is busy; retry shortly"})
+                return
+            raise
+
+        self._write_json(200, payload)
 
     def _write_json(self, status_code: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload).encode("utf-8")
