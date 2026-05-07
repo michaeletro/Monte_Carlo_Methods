@@ -598,6 +598,7 @@ def _fetch_options_probability_payload(connection: sqlite3.Connection, args: arg
         query.append("i.expiry = ?")
         params.append(args.expiry)
 
+
     rows = connection.execute(
         f"""
         WITH latest_option_greeks AS (
